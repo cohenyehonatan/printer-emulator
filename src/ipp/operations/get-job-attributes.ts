@@ -83,12 +83,12 @@ function buildJobAttributes(job: Job, ctx: OperationContext): IppAttribute[] {
   // RFC 8011 time-at-* are integers (seconds, here epoch seconds for the demo).
   const createdSecs = Math.floor(job.createdAt.getTime() / 1000);
 
-  return [
+  const attrs: IppAttribute[] = [
     integerAttr('job-id', job.id),
     uriAttr('job-uri', `${ctx.identity.uri}/jobs/${job.id}`),
     uriAttr('job-printer-uri', ctx.identity.uri),
     enumAttr('job-state', job.stateValue),
-    keywordAttr('job-state-reasons', completed ? 'job-completed-successfully' : 'none'),
+    keywordAttr('job-state-reasons', jobStateReason(job, completed)),
     nameWithoutLangAttr('job-name', job.jobName),
     nameWithoutLangAttr('job-originating-user-name', job.requestingUserName),
     integerAttr('time-at-creation', createdSecs),
@@ -96,6 +96,26 @@ function buildJobAttributes(job: Job, ctx: OperationContext): IppAttribute[] {
     integerAttr('job-impressions', job.impressions),
     integerAttr('job-impressions-completed', completed ? job.impressions : 0),
   ];
+
+  // Echo the effective `job-hold-until` (RFC 8011 §5.2.2) when the client
+  // specified one; absent otherwise so the unheld default set is unchanged.
+  if (job.holdUntil !== undefined) {
+    attrs.push(keywordAttr('job-hold-until', job.holdUntil));
+  }
+
+  return attrs;
+}
+
+/**
+ * Pick the single job-state-reason keyword (RFC 8011 §5.3.8) this emulator
+ * surfaces: `job-completed-successfully` for a completed job,
+ * `job-hold-until-specified` while a job is held due to a holding
+ * `job-hold-until`, else the `none` sentinel.
+ */
+function jobStateReason(job: Job, completed: boolean): string {
+  if (completed) return 'job-completed-successfully';
+  if (job.heldByHoldUntil) return 'job-hold-until-specified';
+  return 'none';
 }
 
 /** Extract the numeric job-id from the trailing `/jobs/<id>` of a job-uri. */

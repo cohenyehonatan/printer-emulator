@@ -11,6 +11,8 @@
 import {
   PrinterStates,
   OperationIds,
+  JobHoldUntil,
+  JOB_HOLD_UNTIL_DEFAULT,
   type PrinterStateValue,
   IPP_VERSION_MAJOR,
   IPP_VERSION_MINOR,
@@ -152,5 +154,21 @@ export function buildPrinterAttributes(
     keywordAttr('sides-supported', 'one-sided', 'two-sided-long-edge'),
     keywordAttr('print-color-mode-supported', 'monochrome', 'color'),
     keywordAttr('urf-supported', ...URF_SUPPORTED.split(',')),
+    // job-hold-until (RFC 8011 §5.2.2): the keyword values this emulator accepts
+    // and the default applied when a client omits it (`no-hold` — run normally).
+    // The named time values are held until an explicit Release-Job; the emulator
+    // has no wall-clock release policy (see README).
+    keywordAttr(
+      'job-hold-until-supported',
+      JobHoldUntil.NO_HOLD,
+      JobHoldUntil.INDEFINITE,
+      JobHoldUntil.DAY_TIME,
+      JobHoldUntil.EVENING,
+      JobHoldUntil.NIGHT,
+      JobHoldUntil.WEEKEND,
+      JobHoldUntil.SECOND_SHIFT,
+      JobHoldUntil.THIRD_SHIFT
+    ),
+    keywordAttr('job-hold-until-default', JOB_HOLD_UNTIL_DEFAULT),
   ];
 }

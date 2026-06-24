@@ -118,7 +118,7 @@ ippfind _ipps._tcp                 # or: dns-sd -B _ipps._tcp
 
 ```bash
 npm install
-npm test        # vitest: codec round-trip, decoder, formats, raster-info, buffer reader, mDNS, Get-Jobs, Get-Job-Attributes, Cancel-Job, Hold/Release-Job, Pause/Resume/Identify-Printer, Create/Send/Close multi-doc, requested-attributes
+npm test        # vitest: codec round-trip, decoder, formats, raster-info, buffer reader, mDNS, Get-Jobs, Get-Job-Attributes, Cancel-Job, Hold/Release-Job, job-hold-until, Pause/Resume/Identify-Printer, Create/Send/Close multi-doc, requested-attributes
 ```
 
 **Runtime dependency:** `bonjour-service` provides the mDNS/DNS-SD responder
@@ -182,14 +182,35 @@ npx tsx src/index.ts scenario   # run the scenarios
   to `pending-held` (job-state 4) via the state machine's HOLD path; a job
   already held is left held (idempotent `successful-ok`). A processing or
   terminal job → `client-error-not-possible`; unknown job →
-  `client-error-not-found`. (The optional `job-hold-until` attribute is accepted
-  and ignored — the job is held until an explicit Release-Job.)
+  `client-error-not-found`. Honors the optional **`job-hold-until`** operation
+  attribute (see below): a holding value re-holds the job, while `no-hold`
+  RELEASES it (Hold-Job with `no-hold` is equivalent to Release-Job per RFC 8011
+  §4.3.5). Absent `job-hold-until` holds indefinitely.
 - `Release-Job` (0x000D) — releases a `pending-held` job back to `pending` and
   runs the emulated print (pending → processing → completed) via the same path
   Close-Job/last-document uses, so a held job actually prints on release.
-  Releasing a job that is not held is a successful no-op (`successful-ok`);
-  a terminal job → `client-error-not-possible`; unknown job →
-  `client-error-not-found`.
+  Releasing a job clears its effective `job-hold-until` to `no-hold`. Releasing
+  a job that is not held is a successful no-op (`successful-ok`); a terminal job
+  → `client-error-not-possible`; unknown job → `client-error-not-found`.
+- **`job-hold-until`** (RFC 8011 §5.2.2) — the Job Template attribute that
+  controls whether/when a job is held. Accepted on Print-Job and Create-Job (in
+  the job-attributes group) and on Hold-Job (as an operation attribute). The
+  emulator advertises `job-hold-until-supported` and
+  `job-hold-until-default` = `no-hold` in Get-Printer-Attributes, echoes the
+  effective value in Get-Job-Attributes / Get-Jobs, and sets the
+  `job-hold-until-specified` job-state-reason while a job is held because of it.
+  Supported values:
+  - `no-hold` — do **not** hold; the job runs normally (still subject to
+    Pause-Printer deferral). This is the default when the attribute is absent on
+    Print-Job.
+  - `indefinite` — hold as `pending-held` until an explicit Release-Job.
+  - `day-time`, `evening`, `night`, `weekend`, `second-shift`, `third-shift` —
+    named wall-clock release windows. This emulator has **no wall-clock release
+    policy and arms no timer**, so these are treated as **held until an explicit
+    Release-Job** (RFC-acceptable for an emulator). No auto-fire timing means the
+    test run never depends on real-time waits and always self-exits cleanly.
+  - any unrecognized keyword — held (defaults to `indefinite` behavior), never an
+    error.
 - `Pause-Printer` (0x0010) — pauses the printer: drives `printer-state` to
   `stopped` (5) with `printer-state-reasons` = `paused`, and **defers job
   execution**. While paused, the job-running paths (Print-Job after enqueue;

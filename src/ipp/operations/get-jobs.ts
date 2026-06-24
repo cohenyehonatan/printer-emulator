@@ -29,10 +29,12 @@ import {
   integerAttr,
   enumAttr,
   uriAttr,
+  keywordAttr,
   nameWithoutLangAttr,
   firstNumber,
   firstString,
   findAttr,
+  type IppAttribute,
 } from '../attribute.js';
 import {
   operationGroup,
@@ -83,19 +85,20 @@ export function handleGetJobs(
 
   // requested-attributes sub-selection: absent → full per-job set (back-compat).
   const requested = readRequestedAttributes(request);
-  const jobGroups = selected.map((job) =>
-    jobGroup(
-      selectAttributes(
-        [
-          integerAttr('job-id', job.id),
-          uriAttr('job-uri', `${ctx.identity.uri}/jobs/${job.id}`),
-          enumAttr('job-state', job.stateValue),
-          nameWithoutLangAttr('job-name', job.jobName),
-        ],
-        requested
-      )
-    )
-  );
+  const jobGroups = selected.map((job) => {
+    const perJob: IppAttribute[] = [
+      integerAttr('job-id', job.id),
+      uriAttr('job-uri', `${ctx.identity.uri}/jobs/${job.id}`),
+      enumAttr('job-state', job.stateValue),
+      nameWithoutLangAttr('job-name', job.jobName),
+    ];
+    // Echo `job-hold-until` only when the client specified one (keeps the
+    // default per-job set unchanged for jobs without a hold-until).
+    if (job.holdUntil !== undefined) {
+      perJob.push(keywordAttr('job-hold-until', job.holdUntil));
+    }
+    return jobGroup(selectAttributes(perJob, requested));
+  });
 
   return {
     versionMajor: request.versionMajor,

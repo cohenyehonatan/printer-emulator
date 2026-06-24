@@ -22,9 +22,11 @@ import {
   integerAttr,
   enumAttr,
   uriAttr,
+  keywordAttr,
   firstString,
   findAttr,
 } from '../attribute.js';
+import { readJobHoldUntil } from '../hold-until.js';
 import {
   operationGroup,
   jobGroup,
@@ -42,6 +44,13 @@ export function handleCreateJob(
     request,
     DelimiterTags.OPERATION_ATTRIBUTES
   );
+  const jobAttrs = getGroupAttributes(request, DelimiterTags.JOB_ATTRIBUTES);
+
+  // A Create-Job job is always `pending-held` until its documents arrive, so
+  // `job-hold-until` doesn't change the initial state here; it is recorded so
+  // Get-Job-Attributes echoes it. (last-document / Close-Job releases the job
+  // as today; an explicit Hold-Job can re-hold it with a value.)
+  const holdUntil = readJobHoldUntil(opAttrs, jobAttrs);
 
   // Allocate an open job with no documents yet (pending-held).
   const job = ctx.queue.enqueue({
@@ -49,6 +58,7 @@ export function handleCreateJob(
     jobName: firstString(findAttr(opAttrs, 'job-name')),
     requestingUserName: firstString(findAttr(opAttrs, 'requesting-user-name')),
     open: true,
+    holdUntil,
   });
 
   const jobUri = `${ctx.identity.uri}/jobs/${job.id}`;
@@ -70,6 +80,9 @@ export function handleCreateJob(
         uriAttr('job-uri', jobUri),
         integerAttr('job-id', job.id),
         enumAttr('job-state', job.stateValue),
+        ...(job.holdUntil !== undefined
+          ? [keywordAttr('job-hold-until', job.holdUntil)]
+          : []),
       ]),
     ],
   };

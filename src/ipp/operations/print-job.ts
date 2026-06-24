@@ -18,6 +18,7 @@ import {
   integerAttr,
   enumAttr,
   uriAttr,
+  keywordAttr,
   firstString,
   findAttr,
 } from '../attribute.js';
@@ -29,6 +30,7 @@ import {
   type IppResponse,
 } from '../message.js';
 import { DelimiterTags } from '../constants.js';
+import { readJobHoldUntil, holdUntilHolds } from '../hold-until.js';
 import { detectFormat, Mime } from '../../documents/formats.js';
 import { parseRasterInfo } from '../../documents/raster-info.js';
 import type { Document } from '../../documents/document.js';
@@ -42,6 +44,11 @@ export function handlePrintJob(
     request,
     DelimiterTags.OPERATION_ATTRIBUTES
   );
+  const jobAttrs = getGroupAttributes(request, DelimiterTags.JOB_ATTRIBUTES);
+
+  // job-hold-until (RFC 8011 §5.2.2): a holding value (anything but `no-hold`)
+  // makes the job start `pending-held` so it is NOT run until a Release-Job.
+  const holdUntil = readJobHoldUntil(opAttrs, jobAttrs);
 
   const bytes = request.data ?? Buffer.alloc(0);
   const requestedFormat = firstString(findAttr(opAttrs, 'document-format'));
@@ -73,13 +80,16 @@ export function handlePrintJob(
       findAttr(opAttrs, 'requesting-user-name')
     ),
     impressions,
+    holdUntil,
   });
 
-  // Emulated print: immediately drive the job to completion — UNLESS the
-  // printer is paused, in which case the job is deferred (left `pending`) and
-  // run later by Resume-Printer's runPendingJobs(). The response then reports
-  // job-state `pending` (3) rather than `completed` (9).
-  if (!ctx.isPaused?.()) {
+  // Emulated print: immediately drive the job to completion — UNLESS either:
+  //   - a holding `job-hold-until` was requested (the job is `pending-held` and
+  //     waits for an explicit Release-Job), or
+  //   - the printer is paused (the job is deferred, left `pending`, and run
+  //     later by Resume-Printer's runPendingJobs()).
+  // In both cases the response reports the held/pending state, not `completed`.
+  if (!holdUntilHolds(holdUntil) && !ctx.isPaused?.()) {
     job.process();
 
     // "Actually print": render PWG/URF pages to PNGs when output is configured.
@@ -105,6 +115,9 @@ export function handlePrintJob(
         uriAttr('job-uri', jobUri),
         integerAttr('job-id', job.id),
         enumAttr('job-state', job.stateValue),
+        ...(job.holdUntil !== undefined
+          ? [keywordAttr('job-hold-until', job.holdUntil)]
+          : []),
         integerAttr('job-impressions', job.impressions),
         integerAttr('job-impressions-completed', job.impressions),
       ]),
