@@ -28,6 +28,7 @@ import {
   mimeMediaTypeAttr,
   keywordAttr,
   integerAttr,
+  integersAttr,
   booleanAttr,
   type IppAttribute,
 } from '../ipp/attribute.js';
@@ -137,6 +138,37 @@ export class IppClient {
       opAttrs.push(keywordAttr('requested-attributes', ...requestedAttributes));
     }
     const request = this.baseRequest(OperationIds.GET_JOB_ATTRIBUTES, opAttrs);
+    return this.send(request);
+  }
+
+  /**
+   * Purge-Jobs (0x0012) — RFC 8011 §4.2.9: remove ALL jobs from the queue,
+   * including retained terminal ones. Always succeeds (the emulator has no auth
+   * gate). After this a Get-Jobs returns nothing.
+   */
+  async purgeJobs(): Promise<IppResponse> {
+    const request = this.baseRequest(OperationIds.PURGE_JOBS);
+    return this.send(request);
+  }
+
+  /**
+   * Cancel-My-Jobs (0x0039) — RFC 3998: cancel all not-completed jobs owned by
+   * `user` (sent as `requesting-user-name`). Omit `user` to cancel every
+   * not-completed job (the emulator's anonymous fallback). Pass `jobIds` to
+   * restrict the cancel set to specific jobs (1setOf `job-ids`). Always succeeds.
+   */
+  async cancelMyJobs(
+    user?: string,
+    jobIds?: number[]
+  ): Promise<IppResponse> {
+    const opAttrs: IppAttribute[] = [];
+    if (user !== undefined) {
+      opAttrs.push(nameWithoutLangAttr('requesting-user-name', user));
+    }
+    if (jobIds && jobIds.length > 0) {
+      opAttrs.push(integersAttr('job-ids', ...jobIds));
+    }
+    const request = this.baseRequest(OperationIds.CANCEL_MY_JOBS, opAttrs);
     return this.send(request);
   }
 
