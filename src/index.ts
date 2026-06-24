@@ -17,6 +17,13 @@
  * Raster output: pass `--raster-out <prefix>` (or set `RASTER_OUT=<prefix>`) to
  * have completed PWG/URF jobs decode + write one PNG per page as
  * `<prefix>-job<id>-p<n>.png`. Off by default (no output side effects).
+ *
+ * IPPS (IPP over TLS): pass `--tls` (or set `IPPS=1`) on the `emulator`
+ * subcommand to ALSO serve `ipps://…/ipp/print` over HTTPS and advertise
+ * `_ipps._tcp` for AirPrint. The TLS port defaults to DEFAULT_TLS_PORT (6311);
+ * override with `TLS_PORT`. A self-signed cert is auto-generated under `.certs/`
+ * via the system openssl binary on first use (reused thereafter). Off by
+ * default; if openssl is unavailable, the emulator runs plaintext-only.
  */
 
 import { IppPrinter } from './printer/ipp-printer.js';
@@ -24,7 +31,7 @@ import { IppClient } from './host/ipp-client.js';
 import { ScenarioRunner } from './host/scenarios/scenario-runner.js';
 import { airprintDiscoveryScenario } from './host/scenarios/airprint-discovery.scenario.js';
 import { printPdfScenario } from './host/scenarios/print-pdf.scenario.js';
-import { DEFAULT_PORT, DEMO_PORT } from './ipp/constants.js';
+import { DEFAULT_PORT, DEMO_PORT, DEFAULT_TLS_PORT } from './ipp/constants.js';
 import { Logger } from './logging/logger.js';
 
 const logger = new Logger('MAIN', 'info');
@@ -46,6 +53,21 @@ function resolveRasterOut(): string | undefined {
     if (value && !value.startsWith('--')) return value;
   }
   return process.env.RASTER_OUT || undefined;
+}
+
+/**
+ * Resolve opt-in IPPS (IPP over TLS) from the `--tls` flag or `IPPS=1` env.
+ * Off by default. When on, the emulator also serves HTTPS on the TLS port
+ * (`TLS_PORT`, default DEFAULT_TLS_PORT) and advertises `_ipps._tcp`.
+ */
+function resolveTls(): boolean {
+  if (process.argv.includes('--tls')) return true;
+  return process.env.IPPS === '1';
+}
+
+/** Resolve the TLS/IPPS port from `TLS_PORT`, defaulting to DEFAULT_TLS_PORT. */
+function resolveTlsPort(): number {
+  return parseInt(process.env.TLS_PORT ?? String(DEFAULT_TLS_PORT), 10);
 }
 
 async function runDemo(): Promise<void> {
@@ -94,11 +116,22 @@ async function runDemo(): Promise<void> {
 async function startEmulator(): Promise<void> {
   const port = resolvePort(DEFAULT_PORT);
   const rasterOut = resolveRasterOut();
-  const printer = new IppPrinter({ port, logLevel: 'debug', rasterOut });
+  const tls = resolveTls();
+  const tlsPort = resolveTlsPort();
+  const printer = new IppPrinter({
+    port,
+    logLevel: 'debug',
+    rasterOut,
+    tls,
+    tlsPort,
+  });
   await printer.start();
 
   if (rasterOut) {
     logger.info('Raster PNG output enabled', { prefix: rasterOut });
+  }
+  if (tls) {
+    logger.info('IPPS (IPP over TLS) enabled', { tlsPort });
   }
   logger.info('IPP printer running. Press Ctrl+C to stop.');
 

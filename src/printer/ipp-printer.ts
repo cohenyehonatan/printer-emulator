@@ -20,10 +20,15 @@ import { dispatch, type OperationContext } from '../ipp/dispatcher.js';
 import { decode } from '../ipp/decoder.js';
 import { encode } from '../ipp/encoder.js';
 import { IppHttpServer } from '../transport/http-server.js';
+import { IppHttpsServer } from '../transport/https-server.js';
+import { ensureSelfSignedCert } from '../transport/tls-cert.js';
 import { MdnsAdvertiser } from '../transport/mdns.js';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import {
   PrinterStates,
   StatusCodes,
+  DEFAULT_TLS_PORT,
   IPP_VERSION_MAJOR,
   IPP_VERSION_MINOR,
   type PrinterStateValue,
@@ -55,6 +60,22 @@ export interface IppPrinterConfig {
   advertise?: boolean;
   /** Hostname used in the mDNS adminurl TXT key. Defaults to 'localhost'. */
   host?: string;
+  /**
+   * Opt-in IPPS (IPP over TLS). When true, the printer also serves
+   * `ipps://…/ipp/print` over HTTPS on `tlsPort` (sharing the same request
+   * handler) using an auto-generated self-signed cert, and advertises
+   * `_ipps._tcp` for AirPrint. Defaults to FALSE so existing demos/tests/CI are
+   * unchanged. If cert generation fails (no openssl), the printer logs a warning
+   * and runs plaintext-only.
+   */
+  tls?: boolean;
+  /** TLS/IPPS listen port. Defaults to DEFAULT_TLS_PORT (6311). */
+  tlsPort?: number;
+  /**
+   * Directory for the self-signed cert/key PEM files. Defaults to `.certs/`
+   * under the current working directory (git-ignored). Reused across starts.
+   */
+  certDir?: string;
 }
 
 export class IppPrinter extends EventEmitter {
@@ -62,6 +83,9 @@ export class IppPrinter extends EventEmitter {
   private readonly queue = new JobQueue();
   private readonly logger: Logger;
   private readonly server: IppHttpServer;
+  private httpsServer: IppHttpsServer | null = null;
+  /** ipps:// URI advertised once the TLS server is up; null while plaintext-only. */
+  private ippsUri: string | null = null;
   private mdns: MdnsAdvertiser | null = null;
   private state: PrinterStateValue = PrinterStates.IDLE;
   /**
@@ -95,12 +119,28 @@ export class IppPrinter extends EventEmitter {
       port: this.config.port,
     });
 
-    // Advertise over mDNS once the HTTP server is accepting connections.
+    // Opt-in IPPS (IPP over TLS). Generate (or reuse) a self-signed cert and,
+    // if successful, start the HTTPS server reusing the same request handler.
+    // Cert failure (e.g. no openssl) is non-fatal: log + continue plaintext.
+    if (this.config.tls) {
+      await this.startTls();
+    }
+
+    // Advertise over mDNS once the server(s) are accepting connections. When
+    // TLS is up, also publish the secure `_ipps._tcp` service.
     if (this.config.advertise ?? true) {
+      const tlsPort = this.config.tlsPort ?? DEFAULT_TLS_PORT;
       this.mdns = new MdnsAdvertiser({
         identity: this.identity,
         port: this.config.port,
         host: this.config.host,
+        ipps: this.ippsUri
+          ? {
+              identity: this.identity,
+              port: tlsPort,
+              host: this.config.host,
+            }
+          : undefined,
       });
       this.mdns.start();
     }
@@ -108,12 +148,54 @@ export class IppPrinter extends EventEmitter {
     this.emit('started');
   }
 
-  /** Stop mDNS advertising (if any) and the HTTP/IPP server. */
+  /**
+   * Bring up the IPPS (TLS) server: ensure a self-signed cert, then start an
+   * HTTPS server on tlsPort reusing this.handleRequest. On cert failure (no
+   * openssl, openssl error) this logs a warning and returns without starting
+   * TLS — the plaintext HTTP server is unaffected. Never throws.
+   */
+  private async startTls(): Promise<void> {
+    const certDir = this.config.certDir ?? join(process.cwd(), '.certs');
+    const tlsPort = this.config.tlsPort ?? DEFAULT_TLS_PORT;
+    const cert = ensureSelfSignedCert(certDir, this.logger);
+    if (!cert) {
+      this.logger.warn('TLS requested but no certificate available; serving plaintext IPP only');
+      return;
+    }
+    try {
+      const tlsOptions = {
+        cert: readFileSync(cert.certPath),
+        key: readFileSync(cert.keyPath),
+      };
+      this.httpsServer = new IppHttpsServer(tlsPort, tlsOptions, (body) =>
+        this.handleRequest(body)
+      );
+      await this.httpsServer.listen();
+      this.ippsUri = `ipps://${this.config.host ?? 'localhost'}:${tlsPort}/ipp/print`;
+      this.logger.info('IPPS (IPP over TLS) listening', {
+        uri: this.ippsUri,
+        port: tlsPort,
+      });
+    } catch (err) {
+      this.logger.warn('Failed to start IPPS server; serving plaintext IPP only', {
+        error: (err as Error).message,
+      });
+      this.httpsServer = null;
+      this.ippsUri = null;
+    }
+  }
+
+  /** Stop mDNS advertising (if any) and the HTTP/IPP + IPPS servers. */
   async stop(): Promise<void> {
     if (this.mdns) {
       await this.mdns.stop();
       this.mdns = null;
     }
+    if (this.httpsServer) {
+      await this.httpsServer.close();
+      this.httpsServer = null;
+    }
+    this.ippsUri = null;
     await this.server.close();
     this.logger.info('IPP printer stopped');
     this.emit('stopped');
@@ -133,6 +215,7 @@ export class IppPrinter extends EventEmitter {
     return {
       identity: this.identity,
       queue: this.queue,
+      ippsUri: this.ippsUri ?? undefined,
       printerState: () => this.liveState(),
       printerStateReasons: () => this.liveReasons(),
       isPaused: () => this.paused,
