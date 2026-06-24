@@ -118,7 +118,7 @@ ippfind _ipps._tcp                 # or: dns-sd -B _ipps._tcp
 
 ```bash
 npm install
-npm test        # vitest: codec round-trip, decoder, formats, raster-info, buffer reader, mDNS, Get-Jobs, Get-Job-Attributes, Cancel-Job, Purge-Jobs, Cancel-My-Jobs, Hold/Release-Job, Restart-Job, job-hold-until, print Job Template attrs (print-color-mode/quality/sides/orientation/media), Pause/Resume/Identify-Printer, Set-Printer/Job-Attributes, Create/Send/Close multi-doc, requested-attributes
+npm test        # vitest: codec round-trip, decoder, formats, raster-info, buffer reader, mDNS, Get-Jobs, Get-Job-Attributes, Cancel-Job, Purge-Jobs, Cancel-My-Jobs, Hold/Release-Job, Restart-Job, job-hold-until, print Job Template attrs (print-color-mode/quality/sides/orientation/media), page-ranges (codec round-trip + parse/echo + render filter), Pause/Resume/Identify-Printer, Set-Printer/Job-Attributes, Create/Send/Close multi-doc, requested-attributes
 ```
 
 **Runtime dependency:** `bonjour-service` provides the mDNS/DNS-SD responder
@@ -253,6 +253,10 @@ npx tsx src/index.ts scenario   # run the scenarios
   | `sides` | keyword | `one-sided`, `two-sided-long-edge`, `two-sided-short-edge` | `one-sided` |
   | `orientation-requested` | enum | `3` portrait, `4` landscape, `5` reverse-landscape, `6` reverse-portrait | `3` (portrait) |
   | `media` | keyword | `iso_a4_210x297mm`, `na_letter_8.5x11in` | `iso_a4_210x297mm` |
+  | `page-ranges` | 1setOf rangeOfInteger | any 1-based inclusive `lower-upper` ranges (e.g. `2-3`) | all pages |
+
+  `page-ranges` is advertised via the boolean `page-ranges-supported` = `true`
+  (rather than a `*-supported`/`*-default` pair) per RFC 8011 §5.2.7.
 
   Omitted attributes are **not** echoed on the job (the printer's `*-default`
   advertises the effective value), keeping the default job-attribute set
@@ -277,6 +281,19 @@ npx tsx src/index.ts scenario   # run the scenarios
   90°-CW vs 270°-CW satisfies.) An unknown/absent orientation leaves the page
   unrotated. Like `print-color-mode`, the Ghostscript-backed PDF/PostScript path
   is **not** rotated (gs orientation control isn't threaded through).
+
+  **`page-ranges` actually selects which pages print.** When a job carries
+  `page-ranges` (a 1setOf rangeOfInteger of 1-based inclusive ranges, e.g.
+  `2-3`), the in-process PWG/URF render path emits **only** the pages whose
+  1-based index (counted across all of the job's raster documents) falls inside
+  some range — `page-ranges=2-3` of a 4-page job writes just two PNGs. The
+  emitted PNG's `-p<n>` suffix keeps the page's **actual** 1-based index
+  (`…-p2.png`, `…-p3.png`), **not** a renumbering of the selected subset, so a
+  file always identifies its source page. A range that runs past the last page
+  simply emits the pages that exist (no error); an absent/empty/inverted
+  `page-ranges` renders every page. Like `print-color-mode`/`orientation`, the
+  Ghostscript-backed PDF/PostScript path is **not** range-filtered (gs page
+  selection isn't threaded through), so `page-ranges` affects only PWG/URF jobs.
 - `Pause-Printer` (0x0010) — pauses the printer: drives `printer-state` to
   `stopped` (5) with `printer-state-reasons` = `paused`, and **defers job
   execution**. While paused, the job-running paths (Print-Job after enqueue;

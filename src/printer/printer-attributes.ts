@@ -256,6 +256,10 @@ export function buildPrinterAttributes(
       OrientationRequested.REVERSE_PORTRAIT
     ),
     enumAttr('orientation-requested-default', ORIENTATION_REQUESTED_DEFAULT),
+    // page-ranges-supported (RFC 8011 §5.2.7): boolean `true` — this emulator
+    // honors `page-ranges` and renders only the selected 1-based page ranges of
+    // a multi-page raster job (see raster-render.ts / README).
+    booleanAttr('page-ranges-supported', true),
     keywordAttr('urf-supported', ...URF_SUPPORTED.split(',')),
     // job-hold-until (RFC 8011 §5.2.2): the keyword values this emulator accepts
     // and the default applied when a client omits it (`no-hold` — run normally).

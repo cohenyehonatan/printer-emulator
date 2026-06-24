@@ -31,7 +31,9 @@ import {
   integersAttr,
   enumAttr,
   booleanAttr,
+  rangesAttr,
   type IppAttribute,
+  type IppRange,
 } from '../ipp/attribute.js';
 import {
   operationGroup,
@@ -84,10 +86,12 @@ export class IppClient {
    *
    * The common print Job Template attributes — `printColorMode`
    * (`color`/`monochrome`/`auto`), `printQuality` (3/4/5), `sides`,
-   * `orientation` (3–6), and `media` — are sent when supplied. They (and
+   * `orientation` (3–6), `media`, and `pageRanges` (1setOf `[lower, upper]`
+   * 1-based inclusive ranges) — are sent when supplied. They (and
    * `job-hold-until`) travel in the job-attributes group as the Job Template
    * attributes they are. `printColorMode='monochrome'` makes the printer render
-   * a color document in grayscale.
+   * a color document in grayscale; `pageRanges=[[2,3]]` prints only pages 2–3 of
+   * a multi-page raster job.
    */
   async printJob(
     docBytes: Buffer,
@@ -100,6 +104,7 @@ export class IppClient {
       sides?: string;
       orientation?: number;
       media?: string;
+      pageRanges?: IppRange[];
     } = {}
   ): Promise<IppResponse> {
     const jobAttrs: IppAttribute[] = [];
@@ -120,6 +125,9 @@ export class IppClient {
     }
     if (options.media !== undefined) {
       jobAttrs.push(keywordAttr('media', options.media));
+    }
+    if (options.pageRanges !== undefined && options.pageRanges.length > 0) {
+      jobAttrs.push(rangesAttr('page-ranges', ...options.pageRanges));
     }
     const request = this.baseRequest(
       OperationIds.PRINT_JOB,
