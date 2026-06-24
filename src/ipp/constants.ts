@@ -22,7 +22,10 @@ export const OperationIds = {
   GET_PRINTER_ATTRIBUTES: 0x000b,
   HOLD_JOB: 0x000c,
   RELEASE_JOB: 0x000d,
+  PAUSE_PRINTER: 0x0010,
+  RESUME_PRINTER: 0x0011,
   CLOSE_JOB: 0x003b,
+  IDENTIFY_PRINTER: 0x003c,
 } as const;
 
 export type OperationId = (typeof OperationIds)[keyof typeof OperationIds];

@@ -3,8 +3,9 @@
  *
  * The Get-Printer-Attributes response advertises the printer's identity and
  * capabilities (RFC 8011 §5.4, IPP Everywhere PWG 5100.14). This module builds
- * a representative printer-attributes group; printer-state is injected at
- * response time so it always reflects live state.
+ * a representative printer-attributes group; printer-state and
+ * printer-state-reasons are injected at response time so they always reflect
+ * live state (e.g. `stopped` + `paused` while the printer is paused).
  */
 
 import {
@@ -64,12 +65,16 @@ export const SUPPORTED_FORMATS = [
 
 /**
  * Build the printer-attributes group reported by Get-Printer-Attributes.
- * `state` is supplied by the caller so the response is always current.
+ * `state` and `stateReasons` are supplied by the caller so the response is
+ * always current — `stateReasons` defaults to `['none']` (RFC 8011 sentinel
+ * for "no reasons") and is set to `['paused']` while the printer is paused.
  */
 export function buildPrinterAttributes(
   identity: PrinterIdentity,
-  state: PrinterStateValue = PrinterStates.IDLE
+  state: PrinterStateValue = PrinterStates.IDLE,
+  stateReasons: string[] = ['none']
 ): IppAttribute[] {
+  const reasons = stateReasons.length > 0 ? stateReasons : ['none'];
   const version = `${IPP_VERSION_MAJOR}.${IPP_VERSION_MINOR}`;
   return [
     uriAttr('printer-uri-supported', identity.uri),
@@ -80,7 +85,7 @@ export function buildPrinterAttributes(
     textWithoutLangAttr('printer-location', identity.location),
     uriAttr('printer-uuid', `urn:uuid:${identity.uuid}`),
     enumAttr('printer-state', state),
-    keywordAttr('printer-state-reasons', 'none'),
+    keywordAttr('printer-state-reasons', ...reasons),
     keywordAttr(
       'ipp-versions-supported',
       version === '2.0' ? '2.0' : version,
@@ -102,9 +107,17 @@ export function buildPrinterAttributes(
         OperationIds.GET_PRINTER_ATTRIBUTES,
         OperationIds.HOLD_JOB,
         OperationIds.RELEASE_JOB,
+        OperationIds.PAUSE_PRINTER,
+        OperationIds.RESUME_PRINTER,
         OperationIds.CLOSE_JOB,
+        OperationIds.IDENTIFY_PRINTER,
       ].map((op) => ({ tag: ValueTags.ENUM, value: op })),
     },
+    // Identify-Printer (0x003C) capability advertisement (RFC 3998 / PWG):
+    // which identify actions this emulator accepts, and which it uses by
+    // default when the client sends none.
+    keywordAttr('identify-actions-supported', 'flash', 'sound'),
+    keywordAttr('identify-actions-default', 'flash'),
     keywordAttr('charset-configured', 'utf-8'),
     keywordAttr('charset-supported', 'utf-8'),
     keywordAttr('natural-language-configured', 'en'),
