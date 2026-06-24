@@ -21,6 +21,8 @@ import {
   enumAttr,
   booleanAttr,
   keywordAttr,
+  rangesAttr,
+  allRanges,
 } from '../../src/ipp/attribute.js';
 
 /**
@@ -76,6 +78,32 @@ describe('IPP codec round-trip', () => {
     expect(media?.values).toHaveLength(2);
     expect(media?.values[0].tag).toBe(ValueTags.KEYWORD);
     expect(media?.values[1].value).toBe('na_letter_8.5x11in');
+  });
+
+  it('round-trips a 1setOf rangeOfInteger (page-ranges) attribute', () => {
+    // page-ranges = 2-3, 7-7 — two rangeOfInteger values (value-tag 0x33).
+    const request: IppRequest = {
+      versionMajor: IPP_VERSION_MAJOR,
+      versionMinor: IPP_VERSION_MINOR,
+      operationIdOrStatusCode: OperationIds.PRINT_JOB,
+      requestId: 42,
+      groups: [
+        operationGroup([charsetAttr('attributes-charset', 'utf-8')]),
+        printerGroup([rangesAttr('page-ranges', [2, 3], [7, 7])]),
+      ],
+    };
+
+    const decoded = decode(encode(request));
+    const pageRanges = decoded.groups[1].attributes.find(
+      (a) => a.name === 'page-ranges'
+    );
+    expect(pageRanges?.values).toHaveLength(2);
+    expect(pageRanges?.values[0].tag).toBe(ValueTags.RANGE_OF_INTEGER);
+    // Each value decodes back to its [lower, upper] tuple.
+    expect(allRanges(pageRanges)).toEqual([
+      [2, 3],
+      [7, 7],
+    ]);
   });
 
   it('round-trips a response with trailing document data', () => {
