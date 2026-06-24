@@ -19,6 +19,7 @@ import { dispatch, type OperationContext } from '../ipp/dispatcher.js';
 import { decode } from '../ipp/decoder.js';
 import { encode } from '../ipp/encoder.js';
 import { IppHttpServer } from '../transport/http-server.js';
+import { MdnsAdvertiser } from '../transport/mdns.js';
 import {
   PrinterStates,
   StatusCodes,
@@ -32,6 +33,14 @@ export interface IppPrinterConfig {
   port: number;
   identity?: Partial<PrinterIdentity>;
   logLevel?: 'debug' | 'info' | 'warn' | 'error';
+  /**
+   * Advertise the printer over mDNS/DNS-SD (AirPrint discovery). Defaults to
+   * true; tests/CI and in-process demos set it false to avoid leaving a
+   * multicast socket open that would block clean process exit.
+   */
+  advertise?: boolean;
+  /** Hostname used in the mDNS adminurl TXT key. Defaults to 'localhost'. */
+  host?: string;
 }
 
 export class IppPrinter extends EventEmitter {
@@ -39,6 +48,7 @@ export class IppPrinter extends EventEmitter {
   private readonly queue = new JobQueue();
   private readonly logger: Logger;
   private readonly server: IppHttpServer;
+  private mdns: MdnsAdvertiser | null = null;
   private state: PrinterStateValue = PrinterStates.IDLE;
 
   constructor(private readonly config: IppPrinterConfig) {
@@ -63,11 +73,26 @@ export class IppPrinter extends EventEmitter {
       uri: this.identity.uri,
       port: this.config.port,
     });
+
+    // Advertise over mDNS once the HTTP server is accepting connections.
+    if (this.config.advertise ?? true) {
+      this.mdns = new MdnsAdvertiser({
+        identity: this.identity,
+        port: this.config.port,
+        host: this.config.host,
+      });
+      this.mdns.start();
+    }
+
     this.emit('started');
   }
 
-  /** Stop the HTTP/IPP server. */
+  /** Stop mDNS advertising (if any) and the HTTP/IPP server. */
   async stop(): Promise<void> {
+    if (this.mdns) {
+      await this.mdns.stop();
+      this.mdns = null;
+    }
     await this.server.close();
     this.logger.info('IPP printer stopped');
     this.emit('stopped');

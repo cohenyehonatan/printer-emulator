@@ -34,8 +34,9 @@ async function runDemo(): Promise<void> {
 
   const port = resolvePort(DEMO_PORT);
 
-  // Start the emulated IPP printer.
-  const printer = new IppPrinter({ port, logLevel: 'info' });
+  // Start the emulated IPP printer. mDNS advertising is disabled for the
+  // in-process demo so it doesn't leave a multicast socket open and hang exit.
+  const printer = new IppPrinter({ port, logLevel: 'info', advertise: false });
   await printer.start();
 
   // Give the server a moment to be ready.
