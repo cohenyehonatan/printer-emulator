@@ -17,9 +17,15 @@
  * CRUCIAL back-compat contract: when `requested-attributes` is ABSENT
  * (undefined or empty), the full set is returned UNCHANGED so existing
  * behavior/tests are preserved.
+ *
+ * Duplicate-attribute coalescing: a non-canonical client may send the request
+ * as SEVERAL separate `requested-attributes` attributes (one keyword each)
+ * rather than the canonical single 1setOf. We honor the UNION of every
+ * `requested-attributes` attribute in the operation group (order-preserving,
+ * de-duplicated), so both wire shapes resolve identically.
  */
 
-import { allStrings, findAttr, type IppAttribute } from './attribute.js';
+import { allStrings, type IppAttribute } from './attribute.js';
 import { getGroupAttributes, type IppMessage } from './message.js';
 import { DelimiterTags } from './constants.js';
 
@@ -35,6 +41,13 @@ const GROUP_KEYWORDS = new Set([
  * Read the requested-attributes keyword list from a request's
  * operation-attributes group. Returns undefined when the attribute is absent
  * (the back-compat signal: emit everything).
+ *
+ * Collects the values of EVERY attribute named `requested-attributes` in the
+ * operation group, not just the first — a client that (non-canonically) sends
+ * the names as multiple separate `requested-attributes` attributes is honored
+ * as the union of all of them. The canonical single-1setOf shape is the
+ * one-attribute case of the same logic, so it is unchanged. The union preserves
+ * first-seen order and drops duplicates.
  */
 export function readRequestedAttributes(
   request: IppMessage
@@ -43,9 +56,18 @@ export function readRequestedAttributes(
     request,
     DelimiterTags.OPERATION_ATTRIBUTES
   );
-  const attr = findAttr(opAttrs, 'requested-attributes');
-  if (!attr) return undefined;
-  const names = allStrings(attr);
+
+  const seen = new Set<string>();
+  const names: string[] = [];
+  for (const attr of opAttrs) {
+    if (attr.name !== 'requested-attributes') continue;
+    for (const name of allStrings(attr)) {
+      if (seen.has(name)) continue;
+      seen.add(name);
+      names.push(name);
+    }
+  }
+
   return names.length > 0 ? names : undefined;
 }
 

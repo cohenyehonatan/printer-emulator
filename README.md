@@ -118,7 +118,7 @@ ippfind _ipps._tcp                 # or: dns-sd -B _ipps._tcp
 
 ```bash
 npm install
-npm test        # vitest: codec round-trip, decoder, formats, raster-info, buffer reader, mDNS, Get-Jobs, Get-Job-Attributes, Cancel-Job, Hold/Release-Job, job-hold-until, Pause/Resume/Identify-Printer, Create/Send/Close multi-doc, requested-attributes
+npm test        # vitest: codec round-trip, decoder, formats, raster-info, buffer reader, mDNS, Get-Jobs, Get-Job-Attributes, Cancel-Job, Hold/Release-Job, Restart-Job, job-hold-until, Pause/Resume/Identify-Printer, Create/Send/Close multi-doc, requested-attributes
 ```
 
 **Runtime dependency:** `bonjour-service` provides the mDNS/DNS-SD responder
@@ -173,7 +173,10 @@ npx tsx src/index.ts scenario   # run the scenarios
   attribute (1setOf keyword), preserving order. Group keywords (`all`,
   `printer-description`, `job-description`, `job-template`) expand to the full
   set. When `requested-attributes` is **absent** the full set is returned
-  unchanged (back-compat).
+  unchanged (back-compat). Robust to **non-canonical clients**: when a request
+  carries the names as several separate `requested-attributes` attributes (one
+  keyword each) instead of one 1setOf, the values are **coalesced** as the union
+  (order-preserving, de-duplicated), so both wire shapes resolve identically.
 - `Cancel-Job` — cancels a cancelable job via the state machine (`successful-ok`,
   job → canceled); returns `client-error-not-possible` for a job already in a
   terminal state (completed/canceled/aborted) and `client-error-not-found` for
@@ -192,6 +195,15 @@ npx tsx src/index.ts scenario   # run the scenarios
   Releasing a job clears its effective `job-hold-until` to `no-hold`. Releasing
   a job that is not held is a successful no-op (`successful-ok`); a terminal job
   → `client-error-not-possible`; unknown job → `client-error-not-found`.
+- `Restart-Job` (0x000E) — re-processes a retained job in a terminal state
+  (completed / canceled / aborted): the job is re-queued to `pending` via the
+  state machine's RESTART path and run again to completion (pending → processing
+  → completed) through the same path Print-Job/Release-Job use, so the job
+  actually re-prints as a fresh run. The paused-deferral is respected (while the
+  printer is paused the restarted job is left `pending` for Resume-Printer to
+  run). A job that is NOT terminal (`pending` / `pending-held` / `processing`)
+  → `client-error-not-possible` (per RFC 8011 §4.3.7, Restart-Job is only for
+  retained completed jobs); unknown job → `client-error-not-found`.
 - **`job-hold-until`** (RFC 8011 §5.2.2) — the Job Template attribute that
   controls whether/when a job is held. Accepted on Print-Job and Create-Job (in
   the job-attributes group) and on Hold-Job (as an operation attribute). The
