@@ -27,6 +27,7 @@ import {
   mimeMediaTypeAttr,
   keywordAttr,
   integerAttr,
+  booleanAttr,
   type IppAttribute,
 } from '../ipp/attribute.js';
 import {
@@ -48,10 +49,15 @@ export class IppClient {
     this.logger = new Logger('CLIENT', config.logLevel ?? 'info');
   }
 
-  /** Get-Printer-Attributes round trip. */
-  async getPrinterAttributes(): Promise<IppResponse> {
+  /**
+   * Get-Printer-Attributes round trip. Pass `requestedAttributes` to sub-select
+   * which printer attributes come back; defaults to `all`.
+   */
+  async getPrinterAttributes(
+    requestedAttributes: string[] = ['all']
+  ): Promise<IppResponse> {
     const request = this.baseRequest(OperationIds.GET_PRINTER_ATTRIBUTES, [
-      keywordAttr('requested-attributes', 'all'),
+      keywordAttr('requested-attributes', ...requestedAttributes),
     ]);
     return this.send(request);
   }
@@ -80,23 +86,97 @@ export class IppClient {
 
   /**
    * Get-Jobs: list jobs on the printer. Optionally filter by `whichJobs`
-   * (not-completed / completed / all) and cap the result count with `limit`.
+   * (not-completed / completed / all), cap the result count with `limit`, and
+   * sub-select the per-job attributes with `requestedAttributes`.
    */
   async getJobs(
-    options: { limit?: number; whichJobs?: string } = {}
+    options: {
+      limit?: number;
+      whichJobs?: string;
+      requestedAttributes?: string[];
+    } = {}
   ): Promise<IppResponse> {
-    const { limit, whichJobs = 'not-completed' } = options;
+    const { limit, whichJobs = 'not-completed', requestedAttributes } = options;
     const opAttrs: IppAttribute[] = [keywordAttr('which-jobs', whichJobs)];
     if (limit !== undefined) {
       opAttrs.push(integerAttr('limit', limit));
+    }
+    if (requestedAttributes && requestedAttributes.length > 0) {
+      opAttrs.push(keywordAttr('requested-attributes', ...requestedAttributes));
     }
     const request = this.baseRequest(OperationIds.GET_JOBS, opAttrs);
     return this.send(request);
   }
 
-  /** Get-Job-Attributes: fetch the attributes of a single job by id. */
-  async getJobAttributes(jobId: number): Promise<IppResponse> {
-    const request = this.baseRequest(OperationIds.GET_JOB_ATTRIBUTES, [
+  /**
+   * Get-Job-Attributes: fetch the attributes of a single job by id. Pass
+   * `requestedAttributes` to sub-select which job attributes come back.
+   */
+  async getJobAttributes(
+    jobId: number,
+    requestedAttributes?: string[]
+  ): Promise<IppResponse> {
+    const opAttrs: IppAttribute[] = [integerAttr('job-id', jobId)];
+    if (requestedAttributes && requestedAttributes.length > 0) {
+      opAttrs.push(keywordAttr('requested-attributes', ...requestedAttributes));
+    }
+    const request = this.baseRequest(OperationIds.GET_JOB_ATTRIBUTES, opAttrs);
+    return this.send(request);
+  }
+
+  /**
+   * Create-Job: open a multi-document job with no data yet (pending-held).
+   * The returned response carries the allocated job-id; follow with one or more
+   * sendDocument() calls and a closeJob() (or a final last-document).
+   */
+  async createJob(
+    options: { jobName?: string } = {}
+  ): Promise<IppResponse> {
+    const opAttrs: IppAttribute[] = [];
+    if (options.jobName !== undefined) {
+      opAttrs.push(nameWithoutLangAttr('job-name', options.jobName));
+    }
+    const request = this.baseRequest(OperationIds.CREATE_JOB, opAttrs);
+    return this.send(request);
+  }
+
+  /**
+   * Send-Document: append a document to an open Create-Job job. Set
+   * `lastDocument` to release the job and run the emulated print.
+   */
+  async sendDocument(
+    jobId: number,
+    docBytes: Buffer,
+    options: {
+      format?: string;
+      lastDocument?: boolean;
+      documentNumber?: number;
+    } = {}
+  ): Promise<IppResponse> {
+    const {
+      format = 'application/octet-stream',
+      lastDocument = false,
+      documentNumber,
+    } = options;
+    const opAttrs: IppAttribute[] = [
+      integerAttr('job-id', jobId),
+      mimeMediaTypeAttr('document-format', format),
+      booleanAttr('last-document', lastDocument),
+    ];
+    if (documentNumber !== undefined) {
+      opAttrs.push(integerAttr('document-number', documentNumber));
+    }
+    const request = this.baseRequest(OperationIds.SEND_DOCUMENT, opAttrs);
+    request.data = docBytes;
+    return this.send(request);
+  }
+
+  /**
+   * Close-Job: close an open Create-Job job (equivalent to last-document with
+   * no further data), releasing/running it if documents were sent.
+   */
+  async closeJob(jobId: number): Promise<IppResponse> {
+    const request = this.baseRequest(OperationIds.CLOSE_JOB, [
       integerAttr('job-id', jobId),
     ]);
     return this.send(request);
