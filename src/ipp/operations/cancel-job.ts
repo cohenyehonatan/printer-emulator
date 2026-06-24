@@ -1,11 +1,13 @@
 /**
- * Cancel-Job operation (0x0008) — RFC 8011 §4.3.3. STUB.
+ * Cancel-Job operation (0x0008) — RFC 8011 §4.3.3. WORKING.
  *
- * Looks up the job-id operation attribute and attempts a CANCEL transition.
- * Returns successful-ok when the job is found (whether or not it was in a
- * cancelable state — a fuller implementation would distinguish
- * client-error-not-possible), and client-error-not-found otherwise. Never
- * throws.
+ * Looks up the job-id operation attribute and attempts a CANCEL transition via
+ * the job state machine. Returns:
+ *   - client-error-not-found (0x0406) when the job-id is absent or unknown;
+ *   - client-error-not-possible (0x0405) when the job is already in a terminal
+ *     state (completed / canceled / aborted) and so cannot be canceled;
+ *   - successful-ok (0x0000) after transitioning a cancelable job to canceled.
+ * Never throws.
  */
 
 import {
@@ -42,9 +44,11 @@ export function handleCancelJob(
   if (jobId !== undefined) {
     const job = ctx.queue.get(jobId);
     if (job) {
-      // TODO: distinguish already-completed (client-error-not-possible).
-      job.cancel();
-      status = StatusCodes.SUCCESSFUL_OK;
+      // cancel() returns false when no CANCEL transition exists from the
+      // current state — i.e. the job is already completed/canceled/aborted.
+      status = job.cancel()
+        ? StatusCodes.SUCCESSFUL_OK
+        : StatusCodes.CLIENT_ERROR_NOT_POSSIBLE;
     }
   }
 
