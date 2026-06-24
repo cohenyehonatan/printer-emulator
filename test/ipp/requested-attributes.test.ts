@@ -117,6 +117,85 @@ describe('requested-attributes sub-selection (Get-Printer-Attributes)', () => {
     expect(findAttr(attrs, 'printer-make-and-model')).toBeDefined();
   });
 
+  it('TWO separate requested-attributes attributes are coalesced (union)', () => {
+    // Non-canonical wire shape: instead of one 1setOf keyword, the client sends
+    // two separate `requested-attributes` attributes (one keyword each). We
+    // must honor BOTH, not just the first.
+    const req: IppRequest = {
+      versionMajor: IPP_VERSION_MAJOR,
+      versionMinor: IPP_VERSION_MINOR,
+      operationIdOrStatusCode: OperationIds.GET_PRINTER_ATTRIBUTES,
+      requestId: 12,
+      groups: [
+        operationGroup([
+          charsetAttr('attributes-charset', DEFAULT_CHARSET),
+          naturalLanguageAttr(
+            'attributes-natural-language',
+            DEFAULT_NATURAL_LANGUAGE
+          ),
+          keywordAttr('requested-attributes', 'printer-name'),
+          keywordAttr('requested-attributes', 'printer-state'),
+        ]),
+      ],
+    };
+    const response = dispatch(decode(encode(req)), makeContext());
+    expect(response.operationIdOrStatusCode).toBe(StatusCodes.SUCCESSFUL_OK);
+
+    const attrs = printerAttrsOf(response);
+    // BOTH names returned — the union, not just the first attribute.
+    expect(attrs).toHaveLength(2);
+    expect(findAttr(attrs, 'printer-name')).toBeDefined();
+    expect(findAttr(attrs, 'printer-state')).toBeDefined();
+    expect(findAttr(attrs, 'printer-make-and-model')).toBeUndefined();
+  });
+
+  it('the canonical single-1setOf path still returns ALL requested names', () => {
+    // Regression guard: a single attribute carrying multiple keyword values
+    // must keep resolving to every value (unchanged behavior).
+    const response = dispatch(
+      decode(
+        encode(
+          getPrinterAttributesRequest([
+            'printer-name',
+            'printer-state',
+            'printer-make-and-model',
+          ])
+        )
+      ),
+      makeContext()
+    );
+    const attrs = printerAttrsOf(response);
+    expect(attrs).toHaveLength(3);
+    expect(findAttr(attrs, 'printer-name')).toBeDefined();
+    expect(findAttr(attrs, 'printer-state')).toBeDefined();
+    expect(findAttr(attrs, 'printer-make-and-model')).toBeDefined();
+  });
+
+  it('a group keyword in a SECOND requested-attributes attr still expands to all', () => {
+    // Coalescing must not break group-keyword expansion: a duplicate attr whose
+    // value is `all` still yields the whole set (union includes the group kw).
+    const req: IppRequest = {
+      versionMajor: IPP_VERSION_MAJOR,
+      versionMinor: IPP_VERSION_MINOR,
+      operationIdOrStatusCode: OperationIds.GET_PRINTER_ATTRIBUTES,
+      requestId: 13,
+      groups: [
+        operationGroup([
+          charsetAttr('attributes-charset', DEFAULT_CHARSET),
+          naturalLanguageAttr(
+            'attributes-natural-language',
+            DEFAULT_NATURAL_LANGUAGE
+          ),
+          keywordAttr('requested-attributes', 'printer-name'),
+          keywordAttr('requested-attributes', 'all'),
+        ]),
+      ],
+    };
+    const response = dispatch(decode(encode(req)), makeContext());
+    const attrs = printerAttrsOf(response);
+    expect(attrs).toHaveLength(FULL_COUNT);
+  });
+
   it('an unknown requested name is simply omitted (no error)', () => {
     const response = dispatch(
       decode(
