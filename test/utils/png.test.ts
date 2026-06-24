@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { inflateSync } from 'zlib';
-import { encodeGrayPng, crc32 } from '../../src/utils/png.js';
+import { encodeGrayPng, encodeRgbPng, crc32 } from '../../src/utils/png.js';
 
 const PNG_SIGNATURE = Buffer.from([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
@@ -83,6 +83,67 @@ describe('encodeGrayPng', () => {
     expect(Array.from(raw)).toEqual([
       0, 1, 2, // row 0
       0, 0, 0, // row 1 padded
+    ]);
+  });
+});
+
+describe('encodeRgbPng', () => {
+  it('writes a valid PNG signature', () => {
+    const png = encodeRgbPng(1, 1, new Uint8Array([1, 2, 3]));
+    expect(png.subarray(0, 8).equals(PNG_SIGNATURE)).toBe(true);
+  });
+
+  it('writes IHDR with bit-depth 8 and color-type 2 (truecolor)', () => {
+    const png = encodeRgbPng(3, 2, new Uint8Array(18));
+    const ihdr = readChunks(png).find((c) => c.type === 'IHDR');
+    expect(ihdr).toBeDefined();
+    expect(ihdr!.data).toHaveLength(13);
+    expect(ihdr!.data.readUInt32BE(0)).toBe(3); // width
+    expect(ihdr!.data.readUInt32BE(4)).toBe(2); // height
+    expect(ihdr!.data.readUInt8(8)).toBe(8); // bit depth
+    expect(ihdr!.data.readUInt8(9)).toBe(2); // color type: truecolor RGB
+    expect(ihdr!.data.readUInt8(12)).toBe(0); // interlace: none
+  });
+
+  it('emits IHDR, IDAT, IEND in order, ending with IEND', () => {
+    const png = encodeRgbPng(1, 1, new Uint8Array([7, 8, 9]));
+    const types = readChunks(png).map((c) => c.type);
+    expect(types).toEqual(['IHDR', 'IDAT', 'IEND']);
+  });
+
+  it('writes a correct CRC-32 on every chunk', () => {
+    const png = encodeRgbPng(2, 2, new Uint8Array(12).fill(77));
+    for (const chunk of readChunks(png)) {
+      expect(chunk.crc).toBe(crc32(chunk.crcInput));
+    }
+  });
+
+  it('IDAT inflates to RGB scanlines with a per-row filter byte 0', () => {
+    // 2x2 image: each pixel 3 bytes (R,G,B).
+    const rgb = new Uint8Array([
+      10, 11, 12, 20, 21, 22, // row 0: 2 pixels
+      30, 31, 32, 40, 41, 42, // row 1: 2 pixels
+    ]);
+    const png = encodeRgbPng(2, 2, rgb);
+    const idat = readChunks(png).find((c) => c.type === 'IDAT');
+    expect(idat).toBeDefined();
+
+    const raw = inflateSync(idat!.data);
+    // Each row is [filter=0][2*3 pixel bytes] => 2 rows * 7 = 14 bytes.
+    expect(Array.from(raw)).toEqual([
+      0, 10, 11, 12, 20, 21, 22, // row 0: filter + 2 RGB pixels
+      0, 30, 31, 32, 40, 41, 42, // row 1: filter + 2 RGB pixels
+    ]);
+  });
+
+  it('pads missing trailing RGB samples with 0 (black)', () => {
+    // 1x2: only the first pixel's 3 bytes provided.
+    const png = encodeRgbPng(1, 2, new Uint8Array([5, 6, 7]));
+    const idat = readChunks(png).find((c) => c.type === 'IDAT')!;
+    const raw = inflateSync(idat.data);
+    expect(Array.from(raw)).toEqual([
+      0, 5, 6, 7, // row 0
+      0, 0, 0, 0, // row 1 padded
     ]);
   });
 });

@@ -122,20 +122,24 @@ describe('decodeRasterPages — PWG Raster (8-bit grayscale)', () => {
     ]);
   });
 
-  it('down-converts sRGB24 pixels to grayscale luma', () => {
-    // width=1, height=1, 24-bit sRGB (3 bytes/pixel). Pure red 0xFF0000.
-    // luma = 0.299*255 ≈ 76.
+  it('preserves sRGB24 color pixels as RGB (isColor true)', () => {
+    // width=2, height=1, 24-bit sRGB (3 bytes/pixel). Pixels red then green.
     const header = pwgPageHeader({
-      width: 1,
+      width: 2,
       height: 1,
       dpiX: 300,
       dpiY: 300,
       bitsPerColor: 8,
       bitsPerPixel: 24,
-      bytesPerLine: 3,
+      bytesPerLine: 6, // 2 px * 3 bytes
       colorSpace: 19, // sRGB
     });
-    const line = [lineRepeat(1), repeatControl(1), 0xff, 0x00, 0x00];
+    const line = [
+      lineRepeat(1),
+      literalControl(2),
+      0xff, 0x00, 0x00, // pixel 0: red
+      0x00, 0x80, 0x10, // pixel 1: arbitrary green-ish
+    ];
 
     const blob = Buffer.concat([
       Buffer.from('RaS2', 'ascii'),
@@ -144,9 +148,99 @@ describe('decodeRasterPages — PWG Raster (8-bit grayscale)', () => {
     ]);
 
     const page = decodeRasterPages(blob)![0];
-    expect(page.widthPx).toBe(1);
-    expect(page.gray).toHaveLength(1);
-    expect(page.gray[0]).toBe(Math.round(0.299 * 255)); // 76
+    expect(page.widthPx).toBe(2);
+    expect(page.isColor).toBe(true);
+    expect(page.gray).toHaveLength(0);
+    expect(Array.from(page.rgb)).toEqual([
+      0xff, 0x00, 0x00, // pixel 0
+      0x00, 0x80, 0x10, // pixel 1
+    ]);
+  });
+
+  it('marks a grayscale page isColor false with rgb empty', () => {
+    const header = pwgPageHeader({
+      width: 2,
+      height: 1,
+      dpiX: 300,
+      dpiY: 300,
+      bitsPerColor: 8,
+      bitsPerPixel: 8,
+      bytesPerLine: 2,
+      colorSpace: 18, // sGray
+    });
+    const line = [lineRepeat(1), literalControl(2), 0x11, 0x22];
+
+    const blob = Buffer.concat([
+      Buffer.from('RaS2', 'ascii'),
+      header,
+      Buffer.from(line),
+    ]);
+
+    const page = decodeRasterPages(blob)![0];
+    expect(page.isColor).toBe(false);
+    expect(page.rgb).toHaveLength(0);
+    expect(Array.from(page.gray)).toEqual([0x11, 0x22]);
+  });
+
+  it('downsamples 48-bit RGB to 8-bit by taking each channel high byte', () => {
+    // width=2, 48-bit RGB (16-bit big-endian channels, 6 bytes/pixel).
+    // px0 = (0xAABB, 0xCCDD, 0xEEFF) → (0xAA, 0xCC, 0xEE)
+    // px1 = (0x1122, 0x3344, 0x5566) → (0x11, 0x33, 0x55)
+    const header = pwgPageHeader({
+      width: 2,
+      height: 1,
+      dpiX: 300,
+      dpiY: 300,
+      bitsPerColor: 16,
+      bitsPerPixel: 48,
+      bytesPerLine: 12, // 2 px * 6 bytes
+      colorSpace: 19, // sRGB
+    });
+    const line = [
+      lineRepeat(1),
+      literalControl(2),
+      0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, // px0
+      0x11, 0x22, 0x33, 0x44, 0x55, 0x66, // px1
+    ];
+
+    const blob = Buffer.concat([
+      Buffer.from('RaS2', 'ascii'),
+      header,
+      Buffer.from(line),
+    ]);
+
+    const page = decodeRasterPages(blob)![0];
+    expect(page.isColor).toBe(true);
+    expect(Array.from(page.rgb)).toEqual([
+      0xaa, 0xcc, 0xee, // px0 high bytes
+      0x11, 0x33, 0x55, // px1 high bytes
+    ]);
+  });
+
+  it('does not throw on truncated color (RGB) line data', () => {
+    const header = pwgPageHeader({
+      width: 4,
+      height: 1,
+      dpiX: 300,
+      dpiY: 300,
+      bitsPerColor: 8,
+      bitsPerPixel: 24,
+      bytesPerLine: 12,
+      colorSpace: 19, // sRGB
+    });
+    // Announce a 4-pixel literal run but cut off before the RGB bytes.
+    const blob = Buffer.concat([
+      Buffer.from('RaS2', 'ascii'),
+      header,
+      Buffer.from([lineRepeat(1), literalControl(4)]),
+    ]);
+
+    expect(() => decodeRasterPages(blob)).not.toThrow();
+    const page = decodeRasterPages(blob)![0];
+    expect(page.isColor).toBe(true);
+    // RGB buffer sized to the full page; undecoded samples are 0.
+    expect(page.rgb).toHaveLength(4 * 1 * 3);
+    expect(Array.from(page.rgb)).toEqual(new Array(12).fill(0));
   });
 
   it('does not throw on truncated line data (pads what it cannot decode)', () => {
