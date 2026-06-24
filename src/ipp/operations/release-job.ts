@@ -64,14 +64,18 @@ export function handleReleaseJob(
 
   // release() returns false only for a terminal job (completed/canceled/
   // aborted), which cannot be released. A held job is released + run; a job
-  // that is not held is a successful no-op.
-  if (!job.release()) {
+  // that is not held is a successful no-op. When the printer is paused the run
+  // is deferred (job released to `pending`) for Resume-Printer's
+  // runPendingJobs().
+  const paused = ctx.isPaused?.() ?? false;
+  if (!job.release(paused)) {
     return errorResponse(request, StatusCodes.CLIENT_ERROR_NOT_POSSIBLE);
   }
 
   // A released held job has run to completion: render its raster pages when an
   // output target is configured (no-op for non-raster / already-run jobs).
-  ctx.renderRaster?.(job);
+  // Skipped while paused — the deferred run renders later.
+  if (!paused) ctx.renderRaster?.(job);
 
   const jobUri = `${ctx.identity.uri}/jobs/${job.id}`;
 

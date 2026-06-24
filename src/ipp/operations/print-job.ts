@@ -75,11 +75,16 @@ export function handlePrintJob(
     impressions,
   });
 
-  // Emulated print: immediately drive the job to completion.
-  job.process();
+  // Emulated print: immediately drive the job to completion — UNLESS the
+  // printer is paused, in which case the job is deferred (left `pending`) and
+  // run later by Resume-Printer's runPendingJobs(). The response then reports
+  // job-state `pending` (3) rather than `completed` (9).
+  if (!ctx.isPaused?.()) {
+    job.process();
 
-  // "Actually print": render PWG/URF pages to PNGs when output is configured.
-  ctx.renderRaster?.(job);
+    // "Actually print": render PWG/URF pages to PNGs when output is configured.
+    ctx.renderRaster?.(job);
+  }
 
   const jobUri = `${ctx.identity.uri}/jobs/${job.id}`;
 

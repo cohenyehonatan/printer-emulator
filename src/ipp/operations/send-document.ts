@@ -93,13 +93,18 @@ export function handleSendDocument(
 
   job.addDocument(document, impressions);
 
-  // last-document=true releases the job and runs the emulated print.
+  // last-document=true releases the job and runs the emulated print — UNLESS
+  // the printer is paused, in which case the job is deferred (released to
+  // `pending` but not run) for Resume-Printer's runPendingJobs().
   const lastDocument = firstBoolean(findAttr(opAttrs, 'last-document')) ?? false;
   if (lastDocument) {
-    job.close();
-    // The closed job has run to completion: render its raster pages (if any
-    // output target is configured). Covers every accumulated document.
-    ctx.renderRaster?.(job);
+    const paused = ctx.isPaused?.() ?? false;
+    job.close(paused);
+    if (!paused) {
+      // The closed job has run to completion: render its raster pages (if any
+      // output target is configured). Covers every accumulated document.
+      ctx.renderRaster?.(job);
+    }
   }
 
   const jobUri = `${ctx.identity.uri}/jobs/${job.id}`;

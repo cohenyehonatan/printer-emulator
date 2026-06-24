@@ -138,7 +138,7 @@ export class Job {
    * aborts an empty job that was closed with no documents. Idempotent once
    * closed. Returns false if the job was not open.
    */
-  close(): boolean {
+  close(defer = false): boolean {
     if (!this._open) return false;
     this._open = false;
 
@@ -150,11 +150,13 @@ export class Job {
       return true;
     }
 
-    // Release the held job to pending, then run it to completion.
+    // Release the held job to pending. Run it to completion now unless `defer`
+    // is set (printer paused) — a deferred job is left `pending` for
+    // Resume-Printer's runPendingJobs() to run.
     if (this.sm.canTransition(JobEvent.RELEASE)) {
       this.sm.transition(JobEvent.RELEASE);
     }
-    this.process();
+    if (!defer) this.process();
     return true;
   }
 
@@ -189,7 +191,7 @@ export class Job {
    * no-op success (RFC 8011 §4.3.6). Returns false only for a terminal job
    * (completed/canceled/aborted), which cannot be released.
    */
-  release(): boolean {
+  release(defer = false): boolean {
     const state = this.sm.getState();
     if (
       state === JobState.COMPLETED ||
@@ -203,9 +205,11 @@ export class Job {
       return true;
     }
     this.sm.transition(JobEvent.RELEASE);
-    // The job is no longer waiting for more documents; run the emulated print.
+    // The job is no longer waiting for more documents.
     this._open = false;
-    this.process();
+    // Run the emulated print now unless deferred (printer paused) — a deferred
+    // job is left `pending` for Resume-Printer's runPendingJobs().
+    if (!defer) this.process();
     return true;
   }
 

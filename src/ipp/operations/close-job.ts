@@ -62,14 +62,18 @@ export function handleCloseJob(
   }
 
   // close() returns false when the job was not open (single-shot, already
-  // closed, or terminal) — Close-Job is not possible in that case.
-  if (!job.close()) {
+  // closed, or terminal) — Close-Job is not possible in that case. When the
+  // printer is paused the close defers the run (job released to `pending` but
+  // not printed) for Resume-Printer's runPendingJobs().
+  const paused = ctx.isPaused?.() ?? false;
+  if (!job.close(paused)) {
     return errorResponse(request, StatusCodes.CLIENT_ERROR_NOT_POSSIBLE);
   }
 
   // The closed job has run to completion: render its raster pages when an
-  // output target is configured (no-op for empty/non-raster jobs).
-  ctx.renderRaster?.(job);
+  // output target is configured (no-op for empty/non-raster jobs). Skipped
+  // while paused — the deferred run renders later.
+  if (!paused) ctx.renderRaster?.(job);
 
   const jobUri = `${ctx.identity.uri}/jobs/${job.id}`;
 
