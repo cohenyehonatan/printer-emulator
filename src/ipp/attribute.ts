@@ -90,6 +90,22 @@ export function firstNumber(attr: IppAttribute | undefined): number | undefined 
   return typeof v === 'number' ? v : undefined;
 }
 
+/** First value of an attribute as a boolean, or undefined. */
+export function firstBoolean(
+  attr: IppAttribute | undefined
+): boolean | undefined {
+  const v = attr?.values[0]?.value;
+  return typeof v === 'boolean' ? v : undefined;
+}
+
+/** Every string value of an attribute (e.g. a 1setOf keyword), in order. */
+export function allStrings(attr: IppAttribute | undefined): string[] {
+  if (!attr) return [];
+  return attr.values
+    .map((v) => v.value)
+    .filter((v): v is string => typeof v === 'string');
+}
+
 /** Find an attribute by name within a flat list. */
 export function findAttr(
   attrs: IppAttribute[],
