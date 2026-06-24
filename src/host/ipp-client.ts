@@ -35,6 +35,7 @@ import {
 import {
   operationGroup,
   jobGroup,
+  printerGroup,
   type IppRequest,
   type IppResponse,
 } from '../ipp/message.js';
@@ -310,6 +311,88 @@ export class IppClient {
       opAttrs.push(textWithoutLangAttr('message', message));
     }
     const request = this.baseRequest(OperationIds.IDENTIFY_PRINTER, opAttrs);
+    return this.send(request);
+  }
+
+  /**
+   * Set-Printer-Attributes (0x0013) — RFC 3380 §4.1: write settable
+   * printer-description attributes. The recognized keys map to IPP attributes
+   * carried in a printer-attributes group: `printerName` → printer-name (name),
+   * `printerInfo` → printer-info (text), `printerLocation` → printer-location
+   * (text), `printerGeoLocation` → printer-geo-location (uri), `organization` →
+   * printer-organization (text). Unsettable/unknown attributes don't fail the
+   * op; the printer applies what it can and returns successful-ok. NOTE: the
+   * emulator has no auth gate (a real host requires operator privilege).
+   */
+  async setPrinterAttributes(attrs: {
+    printerName?: string;
+    printerInfo?: string;
+    printerLocation?: string;
+    printerGeoLocation?: string;
+    organization?: string;
+  }): Promise<IppResponse> {
+    const printerAttrs: IppAttribute[] = [];
+    if (attrs.printerName !== undefined) {
+      printerAttrs.push(nameWithoutLangAttr('printer-name', attrs.printerName));
+    }
+    if (attrs.printerInfo !== undefined) {
+      printerAttrs.push(textWithoutLangAttr('printer-info', attrs.printerInfo));
+    }
+    if (attrs.printerLocation !== undefined) {
+      printerAttrs.push(
+        textWithoutLangAttr('printer-location', attrs.printerLocation)
+      );
+    }
+    if (attrs.printerGeoLocation !== undefined) {
+      printerAttrs.push(
+        uriAttr('printer-geo-location', attrs.printerGeoLocation)
+      );
+    }
+    if (attrs.organization !== undefined) {
+      printerAttrs.push(
+        textWithoutLangAttr('printer-organization', attrs.organization)
+      );
+    }
+    const request = this.baseRequest(OperationIds.SET_PRINTER_ATTRIBUTES);
+    request.groups.push(printerGroup(printerAttrs));
+    return this.send(request);
+  }
+
+  /**
+   * Set-Job-Attributes (0x0014) — RFC 3380 §4.2: write settable job attributes
+   * on a non-terminal job by id. The recognized keys travel in a job-attributes
+   * group: `jobName` → job-name (name), `jobPriority` → job-priority (integer,
+   * 1–100), `copies` → copies (integer, ≥1), `jobHoldUntil` → job-hold-until
+   * (keyword). A terminal job yields client-error-not-possible; an unknown job
+   * yields client-error-not-found. NOTE: the emulator has no auth gate.
+   */
+  async setJobAttributes(
+    jobId: number,
+    attrs: {
+      jobName?: string;
+      jobPriority?: number;
+      copies?: number;
+      jobHoldUntil?: string;
+    }
+  ): Promise<IppResponse> {
+    const jobAttrs: IppAttribute[] = [];
+    if (attrs.jobName !== undefined) {
+      jobAttrs.push(nameWithoutLangAttr('job-name', attrs.jobName));
+    }
+    if (attrs.jobPriority !== undefined) {
+      jobAttrs.push(integerAttr('job-priority', attrs.jobPriority));
+    }
+    if (attrs.copies !== undefined) {
+      jobAttrs.push(integerAttr('copies', attrs.copies));
+    }
+    if (attrs.jobHoldUntil !== undefined) {
+      jobAttrs.push(keywordAttr('job-hold-until', attrs.jobHoldUntil));
+    }
+    const request = this.baseRequest(
+      OperationIds.SET_JOB_ATTRIBUTES,
+      [integerAttr('job-id', jobId)],
+      jobAttrs
+    );
     return this.send(request);
   }
 
