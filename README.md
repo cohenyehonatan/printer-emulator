@@ -12,7 +12,7 @@ object with a job lifecycle, instead of an AEA ATB host↔printer exchange.
 ## Architecture (layers)
 
 ```
-transport/   IPP-over-HTTP (node http) + thin client POST helper + mDNS stub
+transport/   IPP-over-HTTP (node http) + thin client POST helper + mDNS advertiser
    │  POST application/ipp
    ▼
 printer/     IppPrinter orchestrator: identity, job queue, printer-state
@@ -76,8 +76,12 @@ npm run start:emulator                 # defaults to 631; set PORT to change
 
 ```bash
 npm install
-npm test        # vitest: codec round-trip, decoder, formats, buffer reader
+npm test        # vitest: codec round-trip, decoder, formats, buffer reader, mDNS, Get-Job-Attributes
 ```
+
+**Runtime dependency:** `bonjour-service` provides the mDNS/DNS-SD responder
+that makes the printer discoverable as a real AirPrint device. It is the only
+runtime dependency; everything else is dev-only (TypeScript, tsx, vitest).
 
 ## CLI subcommands
 
@@ -96,7 +100,19 @@ npx tsx src/index.ts scenario   # run the scenarios
 - `Get-Printer-Attributes` — returns IPP Everywhere attribute set + live state.
 - `Print-Job` — sniffs document-format, enqueues a Job, runs the emulated print
   (pending → processing → completed), returns job-id/job-uri/job-state.
+- `Get-Job-Attributes` — looks a job up by `job-id` (or `job-uri`) and returns
+  its job-state, job-state-reasons, job-name, originating user, timestamps, and
+  impressions-completed; `client-error-not-found` for an unknown job.
 - `Validate-Job` — returns `successful-ok`.
+- **mDNS / AirPrint advertising** (`transport/mdns.ts`) — real `_ipp._tcp`
+  multicast advertisement via the `bonjour-service` runtime dependency, plus the
+  `_universal._sub._ipp._tcp` subtype AirPrint clients filter on. The TXT record
+  is built from the printer's own attributes (`rp=ipp/print` — matching the HTTP
+  server's IPP route — `ty`, `note`, `product`, `pdl`, `URF`, `adminurl`, `UUID`,
+  ...). The advertiser publishes after the HTTP server is listening and fully
+  unpublishes + destroys the bonjour instance on stop so the process exits
+  cleanly. Advertising is on by default and gated by the `advertise` config flag
+  (the in-process demo disables it to avoid leaving a multicast socket open).
 - Job state machine — table-driven RFC 8011 lifecycle (cancel/abort paths).
 - Document format detection — PDF, PostScript, PWG-raster, URF, PCL.
 - IPP-over-HTTP server + client transport on port 631 (override via `PORT`).
@@ -105,8 +121,6 @@ npx tsx src/index.ts scenario   # run the scenarios
 - `Get-Jobs` — lists the queue but ignores `limit` / `which-jobs` filters.
 - `Cancel-Job` — looks up + cancels by job-id; doesn't distinguish
   already-completed (`client-error-not-possible`).
-- mDNS / AirPrint advertising (`transport/mdns.ts`) — records params + logs;
-  no real `_ipp._tcp` multicast responder.
 - Real document rendering/rasterization — documents are accepted and measured,
   not rendered (`documents/document.ts` `PassthroughHandler`).
 - Unknown operations — answered with `server-error-operation-not-supported`.
