@@ -24,6 +24,7 @@ import {
   naturalLanguageAttr,
   uriAttr,
   nameWithoutLangAttr,
+  textWithoutLangAttr,
   mimeMediaTypeAttr,
   keywordAttr,
   integerAttr,
@@ -201,6 +202,45 @@ export class IppClient {
     const request = this.baseRequest(OperationIds.RELEASE_JOB, [
       integerAttr('job-id', jobId),
     ]);
+    return this.send(request);
+  }
+
+  /**
+   * Pause-Printer: stop the printer (printer-state → stopped). While paused,
+   * submitted jobs are deferred (left pending) until resumePrinter(). Idempotent.
+   */
+  async pausePrinter(): Promise<IppResponse> {
+    const request = this.baseRequest(OperationIds.PAUSE_PRINTER);
+    return this.send(request);
+  }
+
+  /**
+   * Resume-Printer: clear the paused state (printer-state → idle/processing)
+   * and run any jobs deferred while paused. Idempotent.
+   */
+  async resumePrinter(): Promise<IppResponse> {
+    const request = this.baseRequest(OperationIds.RESUME_PRINTER);
+    return this.send(request);
+  }
+
+  /**
+   * Identify-Printer: ask the printer to make itself identifiable. Pass the
+   * desired `identify-actions` (`flash` / `sound` / `display`); omit to use the
+   * printer's default. An optional `message` accompanies a `display` action.
+   * The emulator logs the action rather than performing it.
+   */
+  async identifyPrinter(
+    actions?: string[],
+    message?: string
+  ): Promise<IppResponse> {
+    const opAttrs: IppAttribute[] = [];
+    if (actions && actions.length > 0) {
+      opAttrs.push(keywordAttr('identify-actions', ...actions));
+    }
+    if (message !== undefined) {
+      opAttrs.push(textWithoutLangAttr('message', message));
+    }
+    const request = this.baseRequest(OperationIds.IDENTIFY_PRINTER, opAttrs);
     return this.send(request);
   }
 
