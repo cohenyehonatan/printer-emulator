@@ -103,6 +103,15 @@ function buildJobAttributes(job: Job, ctx: OperationContext): IppAttribute[] {
     attrs.push(keywordAttr('job-hold-until', job.holdUntil));
   }
 
+  // Echo `job-priority`/`copies` only once set (Set-Job-Attributes), so the
+  // default job-attribute set is unchanged for jobs that never carried them.
+  if (job.jobPriority !== undefined) {
+    attrs.push(integerAttr('job-priority', job.jobPriority));
+  }
+  if (job.copies !== undefined) {
+    attrs.push(integerAttr('copies', job.copies));
+  }
+
   return attrs;
 }
 

@@ -97,6 +97,14 @@ export function handleGetJobs(
     if (job.holdUntil !== undefined) {
       perJob.push(keywordAttr('job-hold-until', job.holdUntil));
     }
+    // Echo job-priority/copies only once set (Set-Job-Attributes), keeping the
+    // default per-job set unchanged for jobs that never carried them.
+    if (job.jobPriority !== undefined) {
+      perJob.push(integerAttr('job-priority', job.jobPriority));
+    }
+    if (job.copies !== undefined) {
+      perJob.push(integerAttr('copies', job.copies));
+    }
     return jobGroup(selectAttributes(perJob, requested));
   });
 

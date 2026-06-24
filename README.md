@@ -118,7 +118,7 @@ ippfind _ipps._tcp                 # or: dns-sd -B _ipps._tcp
 
 ```bash
 npm install
-npm test        # vitest: codec round-trip, decoder, formats, raster-info, buffer reader, mDNS, Get-Jobs, Get-Job-Attributes, Cancel-Job, Purge-Jobs, Cancel-My-Jobs, Hold/Release-Job, Restart-Job, job-hold-until, Pause/Resume/Identify-Printer, Create/Send/Close multi-doc, requested-attributes
+npm test        # vitest: codec round-trip, decoder, formats, raster-info, buffer reader, mDNS, Get-Jobs, Get-Job-Attributes, Cancel-Job, Purge-Jobs, Cancel-My-Jobs, Hold/Release-Job, Restart-Job, job-hold-until, Pause/Resume/Identify-Printer, Set-Printer/Job-Attributes, Create/Send/Close multi-doc, requested-attributes
 ```
 
 **Runtime dependency:** `bonjour-service` provides the mDNS/DNS-SD responder
@@ -255,6 +255,31 @@ npx tsx src/index.ts scenario   # run the scenarios
   `successful-ok`, with or without `identify-actions`. The printer advertises
   `identify-actions-supported` (`flash`, `sound`) and `identify-actions-default`
   (`flash`).
+- `Set-Printer-Attributes` (0x0013) — RFC 3380 §4.1: writes settable
+  printer-description attributes carried in the request's printer-attributes
+  group, overriding the live printer identity so a subsequent
+  Get-Printer-Attributes reflects them. **Settable attributes:** `printer-name`,
+  `printer-info`, `printer-location`, `printer-geo-location`,
+  `printer-organization` (advertised in `printer-settable-attributes-supported`).
+  Unsettable/unknown attributes do **not** fail the op (RFC 3380 is best-effort):
+  the recognized ones are applied and any others are returned in an
+  `unsupported-attributes` group, with an overall `successful-ok`. The response
+  echoes the now-current printer attributes. **No-auth caveat:** a real IPP host
+  gates Set-Printer-Attributes behind operator/admin operation policy; this
+  emulator has no auth layer, so it applies the writes unconditionally.
+- `Set-Job-Attributes` (0x0014) — RFC 3380 §4.2: writes settable job attributes
+  (carried in the job-attributes group) on a job resolved by `job-id`/`job-uri`,
+  reflected by Get-Job-Attributes / Get-Jobs. **Settable attributes:** `job-name`,
+  `job-priority` (1–100), `copies` (≥1), `job-hold-until` (which reuses the
+  existing hold-until logic — a holding value re-holds the job, `no-hold`
+  releases and runs it; advertised in `job-settable-attributes-supported`). Only
+  a **non-terminal** job (pending / pending-held / processing) is settable; a
+  terminal job (completed / canceled / aborted) → `client-error-not-possible`;
+  an unknown job → `client-error-not-found`. Unsettable/unknown attributes are
+  surfaced in an `unsupported-attributes` group rather than failing the op. Never
+  throws. **No-auth caveat:** a real IPP host gates this behind the job owner's /
+  operator's policy; this emulator has no auth layer, so it applies the writes
+  unconditionally.
 - PWG-Raster / Apple-URF page-header parsing — `documents/raster-info.ts` walks
   the fixed-layout page headers (PWG `RaS2`, URF `UNIRAST\0`), counting pages
   and reading each page's pixel width/height + resolution; the PackBits line

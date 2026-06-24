@@ -47,6 +47,8 @@ import { handleRestartJob } from './operations/restart-job.js';
 import { handlePausePrinter } from './operations/pause-printer.js';
 import { handleResumePrinter } from './operations/resume-printer.js';
 import { handleIdentifyPrinter } from './operations/identify-printer.js';
+import { handleSetPrinterAttributes } from './operations/set-printer-attributes.js';
+import { handleSetJobAttributes } from './operations/set-job-attributes.js';
 
 /** Shared context passed to every operation handler. */
 export interface OperationContext {
@@ -87,6 +89,17 @@ export interface OperationContext {
    * normal runs/tests write nothing. Never throws.
    */
   renderRaster?: (job: Job) => void;
+  /**
+   * Apply settable printer-description attributes (Set-Printer-Attributes, RFC
+   * 3380 §4.1) as overrides on the live printer identity, so a subsequent
+   * Get-Printer-Attributes reflects them. `overrides` is a partial of the
+   * settable PrinterIdentity fields (printer-name → name, printer-info → info,
+   * printer-location → location, …). Optional so bare unit-test contexts can
+   * omit it — the Set-Printer-Attributes handler then mutates `ctx.identity`
+   * directly as a fallback. Real IPP gates this behind operator policy; the
+   * emulator has no auth layer (see README).
+   */
+  setPrinterAttributes?: (overrides: Partial<PrinterIdentity>) => void;
 }
 
 export type OperationHandler = (
@@ -112,6 +125,8 @@ const HANDLERS: Record<number, OperationHandler> = {
   [OperationIds.PAUSE_PRINTER]: handlePausePrinter,
   [OperationIds.RESUME_PRINTER]: handleResumePrinter,
   [OperationIds.IDENTIFY_PRINTER]: handleIdentifyPrinter,
+  [OperationIds.SET_PRINTER_ATTRIBUTES]: handleSetPrinterAttributes,
+  [OperationIds.SET_JOB_ATTRIBUTES]: handleSetJobAttributes,
 };
 
 /** Dispatch a decoded IPP request to its handler and return the response. */

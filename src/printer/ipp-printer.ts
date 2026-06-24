@@ -224,7 +224,32 @@ export class IppPrinter extends EventEmitter {
       renderRaster: this.config.rasterOut
         ? (job: Job) => this.renderRaster(job)
         : undefined,
+      setPrinterAttributes: (overrides) => this.setPrinterAttributes(overrides),
     };
+  }
+
+  /**
+   * Apply settable printer-description attributes (Set-Printer-Attributes, RFC
+   * 3380 §4.1) as overrides on the live printer identity. Because `identity` is
+   * a mutable plain object shared with the OperationContext, mutating its
+   * settable fields in place makes a subsequent Get-Printer-Attributes report
+   * the new values. Only the writable fields (name, info, location,
+   * geoLocation, organization) are touched; everything else (uri, uuid,
+   * makeAndModel) is left as-is. NOTE: real IPP gates these writes behind
+   * operator/admin policy — this emulator has no auth layer (see README).
+   */
+  setPrinterAttributes(overrides: Partial<PrinterIdentity>): void {
+    if (overrides.name !== undefined) this.identity.name = overrides.name;
+    if (overrides.info !== undefined) this.identity.info = overrides.info;
+    if (overrides.location !== undefined) {
+      this.identity.location = overrides.location;
+    }
+    if (overrides.geoLocation !== undefined) {
+      this.identity.geoLocation = overrides.geoLocation;
+    }
+    if (overrides.organization !== undefined) {
+      this.identity.organization = overrides.organization;
+    }
   }
 
   /**
