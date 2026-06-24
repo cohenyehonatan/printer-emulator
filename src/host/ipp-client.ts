@@ -230,6 +230,19 @@ export class IppClient {
   }
 
   /**
+   * Restart-Job: re-process a retained terminal job (completed/canceled/
+   * aborted) — it is re-queued to pending and run again to completion (RFC 8011
+   * §4.3.7). A job that is not in a terminal state cannot be restarted and
+   * yields client-error-not-possible.
+   */
+  async restartJob(jobId: number): Promise<IppResponse> {
+    const request = this.baseRequest(OperationIds.RESTART_JOB, [
+      integerAttr('job-id', jobId),
+    ]);
+    return this.send(request);
+  }
+
+  /**
    * Pause-Printer: stop the printer (printer-state → stopped). While paused,
    * submitted jobs are deferred (left pending) until resumePrinter(). Idempotent.
    */

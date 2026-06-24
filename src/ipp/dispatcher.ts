@@ -41,6 +41,7 @@ import { handleSendDocument } from './operations/send-document.js';
 import { handleCloseJob } from './operations/close-job.js';
 import { handleHoldJob } from './operations/hold-job.js';
 import { handleReleaseJob } from './operations/release-job.js';
+import { handleRestartJob } from './operations/restart-job.js';
 import { handlePausePrinter } from './operations/pause-printer.js';
 import { handleResumePrinter } from './operations/resume-printer.js';
 import { handleIdentifyPrinter } from './operations/identify-printer.js';
@@ -103,6 +104,7 @@ const HANDLERS: Record<number, OperationHandler> = {
   [OperationIds.CLOSE_JOB]: handleCloseJob,
   [OperationIds.HOLD_JOB]: handleHoldJob,
   [OperationIds.RELEASE_JOB]: handleReleaseJob,
+  [OperationIds.RESTART_JOB]: handleRestartJob,
   [OperationIds.PAUSE_PRINTER]: handlePausePrinter,
   [OperationIds.RESUME_PRINTER]: handleResumePrinter,
   [OperationIds.IDENTIFY_PRINTER]: handleIdentifyPrinter,

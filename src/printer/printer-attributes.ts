@@ -129,6 +129,7 @@ export function buildPrinterAttributes(
         OperationIds.GET_PRINTER_ATTRIBUTES,
         OperationIds.HOLD_JOB,
         OperationIds.RELEASE_JOB,
+        OperationIds.RESTART_JOB,
         OperationIds.PAUSE_PRINTER,
         OperationIds.RESUME_PRINTER,
         OperationIds.CLOSE_JOB,
