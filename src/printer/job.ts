@@ -70,6 +70,14 @@ export class Job {
    * Get-Job-Attributes always echoes the effective value.
    */
   private _holdUntil: string | undefined;
+  /**
+   * Number of times this job has run to `completed`. Starts at 0 and increments
+   * each time process() reaches COMPLETE. A Restart-Job (§4.3.7) re-queues a
+   * terminal job and runs it again, so a second completion bumps this to 2 —
+   * giving callers/tests an observable "it actually re-ran" signal (a fresh run
+   * is otherwise invisible because impressions-completed is derived from state).
+   */
+  private _runs = 0;
   private readonly sm: JobStateMachine;
 
   constructor(init: JobInit) {
@@ -220,6 +228,14 @@ export class Job {
     return true;
   }
 
+  /**
+   * The number of times this job has run to `completed` (0 before its first
+   * completion, 2 after a Restart-Job + second run, …). See `_runs`.
+   */
+  get runs(): number {
+    return this._runs;
+  }
+
   /** Move pending -> processing -> completed in one shot (emulated print). */
   process(): void {
     if (this.sm.canTransition(JobEvent.START_PROCESSING)) {
@@ -227,6 +243,7 @@ export class Job {
     }
     if (this.sm.canTransition(JobEvent.COMPLETE)) {
       this.sm.transition(JobEvent.COMPLETE);
+      this._runs += 1;
     }
   }
 
@@ -292,6 +309,30 @@ export class Job {
     this._holdUntil = JobHoldUntil.NO_HOLD;
     // Run the emulated print now unless deferred (printer paused) — a deferred
     // job is left `pending` for Resume-Printer's runPendingJobs().
+    if (!defer) this.process();
+    return true;
+  }
+
+  /**
+   * Restart the job (Restart-Job, 0x000E) — RFC 8011 §4.3.7. A retained job in
+   * a terminal state (completed / canceled / aborted) is re-queued to PENDING
+   * (JobEvent.RESTART) and then run again to completion via process(), reusing
+   * the same pending → processing → completed path Print-Job/Release-Job use —
+   * so a restart is a genuine fresh run (its derived impressions-completed
+   * resets to 0 with the PENDING state and `runs` increments on re-completion).
+   * `defer` is honored (printer paused → leave the job PENDING for
+   * Resume-Printer's runPendingJobs() to run). Returns false — rather than
+   * throwing — when the job is NOT terminal (pending / pending-held /
+   * processing), which is not a legal Restart-Job target. Mirrors release()'s
+   * "false on illegal transition" contract.
+   */
+  restart(defer = false): boolean {
+    if (!this.sm.canTransition(JobEvent.RESTART)) return false;
+    this.sm.transition(JobEvent.RESTART);
+    // A restarted job is a closed single-shot run again: not open for more
+    // documents, and no longer held by any prior `job-hold-until`.
+    this._open = false;
+    this._holdUntil = JobHoldUntil.NO_HOLD;
     if (!defer) this.process();
     return true;
   }

@@ -26,6 +26,7 @@ export enum JobEvent {
   COMPLETE = 'COMPLETE',
   CANCEL = 'CANCEL',
   ABORT = 'ABORT',
+  RESTART = 'RESTART',
 }
 
 export interface Transition {
@@ -43,6 +44,8 @@ export interface Transition {
  *      │                  └─cancel/abort─▶ canceled/aborted
  *      ├─hold─▶ pending-held ─release─▶ pending
  *      └─cancel─▶ canceled
+ *
+ *   completed/canceled/aborted ─restart─▶ pending   (Restart-Job, §4.3.7)
  */
 export const TRANSITIONS: Transition[] = [
   // Hold / release
@@ -74,6 +77,12 @@ export const TRANSITIONS: Transition[] = [
   { from: JobState.PENDING, event: JobEvent.ABORT, to: JobState.ABORTED },
   { from: JobState.PROCESSING, event: JobEvent.ABORT, to: JobState.ABORTED },
   { from: JobState.PROCESSING_STOPPED, event: JobEvent.ABORT, to: JobState.ABORTED },
+
+  // Restart (Restart-Job, §4.3.7): a retained terminal job is re-queued to
+  // pending so it can run again. Only valid from a terminal state.
+  { from: JobState.COMPLETED, event: JobEvent.RESTART, to: JobState.PENDING },
+  { from: JobState.CANCELED, event: JobEvent.RESTART, to: JobState.PENDING },
+  { from: JobState.ABORTED, event: JobEvent.RESTART, to: JobState.PENDING },
 ];
 
 import { JobStates, type JobStateValue } from '../ipp/constants.js';
