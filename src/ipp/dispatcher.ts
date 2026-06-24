@@ -41,6 +41,9 @@ import { handleSendDocument } from './operations/send-document.js';
 import { handleCloseJob } from './operations/close-job.js';
 import { handleHoldJob } from './operations/hold-job.js';
 import { handleReleaseJob } from './operations/release-job.js';
+import { handlePausePrinter } from './operations/pause-printer.js';
+import { handleResumePrinter } from './operations/resume-printer.js';
+import { handleIdentifyPrinter } from './operations/identify-printer.js';
 
 /** Shared context passed to every operation handler. */
 export interface OperationContext {
@@ -48,6 +51,25 @@ export interface OperationContext {
   queue: JobQueue;
   /** Live printer-state at the moment of the request. */
   printerState: () => PrinterStateValue;
+  /**
+   * Live printer-state-reasons keyword(s) at the moment of the request
+   * (`['paused']` while paused, else `['none']`). Optional so bare unit-test
+   * contexts can omit it — the get-printer-attributes path defaults to
+   * `['none']` when it is absent.
+   */
+  printerStateReasons?: () => string[];
+  /**
+   * Whether the printer is currently paused (Pause-Printer). While paused, the
+   * job-running paths (Print-Job after enqueue; Send-Document/Close-Job/
+   * Release-Job on release) must DEFER the job — leaving it `pending` rather
+   * than running it to completion. Resume-Printer later runs the deferred jobs.
+   * Defaults to "not paused" when the field is absent (e.g. unit-test contexts).
+   */
+  isPaused?: () => boolean;
+  /** Pause the printer: drives printer-state to stopped and defers jobs. */
+  pausePrinter?: () => void;
+  /** Resume the printer and run any deferred pending jobs to completion. */
+  resumePrinter?: () => void;
   /**
    * Optional "actually print" hook: invoked with a finished raster job so the
    * emulator can render its PWG/URF pages to PNGs. Present only when an output
@@ -74,6 +96,9 @@ const HANDLERS: Record<number, OperationHandler> = {
   [OperationIds.CLOSE_JOB]: handleCloseJob,
   [OperationIds.HOLD_JOB]: handleHoldJob,
   [OperationIds.RELEASE_JOB]: handleReleaseJob,
+  [OperationIds.PAUSE_PRINTER]: handlePausePrinter,
+  [OperationIds.RESUME_PRINTER]: handleResumePrinter,
+  [OperationIds.IDENTIFY_PRINTER]: handleIdentifyPrinter,
 };
 
 /** Dispatch a decoded IPP request to its handler and return the response. */

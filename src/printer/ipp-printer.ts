@@ -59,6 +59,13 @@ export class IppPrinter extends EventEmitter {
   private readonly server: IppHttpServer;
   private mdns: MdnsAdvertiser | null = null;
   private state: PrinterStateValue = PrinterStates.IDLE;
+  /**
+   * Whether the printer is paused (Pause-Printer, 0x0010). While paused,
+   * liveState() reports `stopped` and the job-running operation paths defer
+   * jobs (leaving them `pending`) instead of printing them. Resume-Printer
+   * clears the flag and runs the deferred jobs.
+   */
+  private paused = false;
 
   constructor(private readonly config: IppPrinterConfig) {
     super();
@@ -122,10 +129,56 @@ export class IppPrinter extends EventEmitter {
       identity: this.identity,
       queue: this.queue,
       printerState: () => this.liveState(),
+      printerStateReasons: () => this.liveReasons(),
+      isPaused: () => this.paused,
+      pausePrinter: () => this.pause(),
+      resumePrinter: () => this.resume(),
       renderRaster: this.config.rasterOut
         ? (job: Job) => this.renderRaster(job)
         : undefined,
     };
+  }
+
+  /**
+   * Pause the printer (Pause-Printer, 0x0010). Sets the paused flag so
+   * liveState() reports `stopped` and subsequent job submissions are deferred.
+   * Idempotent.
+   */
+  pause(): void {
+    if (this.paused) return;
+    this.paused = true;
+    this.logger.stateChange('idle/processing', 'stopped', 'Pause-Printer');
+  }
+
+  /**
+   * Resume the printer (Resume-Printer, 0x0011). Clears the paused flag and
+   * runs any jobs that were deferred while paused. Idempotent.
+   */
+  resume(): void {
+    if (!this.paused) {
+      // Not paused — still run any pending jobs defensively, but there should
+      // be none deferred.
+      this.runPendingJobs();
+      return;
+    }
+    this.paused = false;
+    this.logger.stateChange('stopped', 'idle', 'Resume-Printer');
+    this.runPendingJobs();
+  }
+
+  /**
+   * Run every deferred job — those left `pending` (released, not held) while
+   * the printer was paused — through the existing run-to-completion path
+   * (pending → processing → completed), rendering raster pages when an output
+   * target is configured. Held (`pending-held`) jobs are left untouched.
+   */
+  runPendingJobs(): void {
+    for (const job of this.queue.list()) {
+      if (job.state === JobState.PENDING) {
+        job.process();
+        this.renderRaster(job);
+      }
+    }
   }
 
   /**
@@ -145,12 +198,25 @@ export class IppPrinter extends EventEmitter {
    * what a real IPP/AirPrint client (e.g. ipptool, CUPS) expects.
    */
   private liveState(): PrinterStateValue {
+    // A paused printer is `stopped` — paused takes precedence over idle. A job
+    // mid-processing is driven synchronously (pending → processing → completed
+    // in one call), so it can never overlap a paused window.
+    if (this.paused) return PrinterStates.STOPPED;
     let stopped = false;
     for (const job of this.queue.list()) {
       if (job.state === JobState.PROCESSING) return PrinterStates.PROCESSING;
       if (job.state === JobState.PROCESSING_STOPPED) stopped = true;
     }
     return stopped ? PrinterStates.STOPPED : this.state;
+  }
+
+  /**
+   * Live printer-state-reasons (RFC 8011 §5.4.12). `paused` while the printer
+   * is paused; otherwise the `none` sentinel (no reasons). Kept in lockstep
+   * with liveState() so a `stopped` paused printer reports a matching reason.
+   */
+  private liveReasons(): string[] {
+    return this.paused ? ['paused'] : ['none'];
   }
 
   /**

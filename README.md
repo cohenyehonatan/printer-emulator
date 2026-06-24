@@ -76,7 +76,7 @@ npm run start:emulator                 # defaults to 631; set PORT to change
 
 ```bash
 npm install
-npm test        # vitest: codec round-trip, decoder, formats, raster-info, buffer reader, mDNS, Get-Jobs, Get-Job-Attributes, Cancel-Job, Hold/Release-Job, Create/Send/Close multi-doc, requested-attributes
+npm test        # vitest: codec round-trip, decoder, formats, raster-info, buffer reader, mDNS, Get-Jobs, Get-Job-Attributes, Cancel-Job, Hold/Release-Job, Pause/Resume/Identify-Printer, Create/Send/Close multi-doc, requested-attributes
 ```
 
 **Runtime dependency:** `bonjour-service` provides the mDNS/DNS-SD responder
@@ -148,6 +148,24 @@ npx tsx src/index.ts scenario   # run the scenarios
   Releasing a job that is not held is a successful no-op (`successful-ok`);
   a terminal job → `client-error-not-possible`; unknown job →
   `client-error-not-found`.
+- `Pause-Printer` (0x0010) — pauses the printer: drives `printer-state` to
+  `stopped` (5) with `printer-state-reasons` = `paused`, and **defers job
+  execution**. While paused, the job-running paths (Print-Job after enqueue;
+  Send-Document `last-document` / Close-Job / Release-Job on release) leave the
+  job `pending` (job-state 3) instead of printing it. Idempotent
+  (`successful-ok`); returns the now-live printer-state group.
+- `Resume-Printer` (0x0011) — clears the paused state and runs every deferred
+  `pending` (released, not held) job to completion via the existing
+  run-to-completion path, then reports `printer-state` back to `idle` (3) (or
+  `processing` if a job is mid-run). Idempotent (`successful-ok`); resuming an
+  unpaused printer is a no-op success.
+- `Identify-Printer` (0x003C) — asks the printer to make itself identifiable.
+  Parses the optional `identify-actions` (1setOf keyword: `flash` / `sound` /
+  `display`, defaulting to `flash`) and `message`, and **logs** the action
+  (e.g. `IDENTIFY: flash`) since there is no physical device. Always returns
+  `successful-ok`, with or without `identify-actions`. The printer advertises
+  `identify-actions-supported` (`flash`, `sound`) and `identify-actions-default`
+  (`flash`).
 - PWG-Raster / Apple-URF page-header parsing — `documents/raster-info.ts` walks
   the fixed-layout page headers (PWG `RaS2`, URF `UNIRAST\0`), counting pages
   and reading each page's pixel width/height + resolution; the PackBits line
