@@ -15,10 +15,12 @@ export const OperationIds = {
   PRINT_JOB: 0x0002,
   VALIDATE_JOB: 0x0004,
   CREATE_JOB: 0x0005,
+  SEND_DOCUMENT: 0x0006,
   CANCEL_JOB: 0x0008,
   GET_JOB_ATTRIBUTES: 0x0009,
   GET_JOBS: 0x000a,
   GET_PRINTER_ATTRIBUTES: 0x000b,
+  CLOSE_JOB: 0x003b,
 } as const;
 
 export type OperationId = (typeof OperationIds)[keyof typeof OperationIds];
