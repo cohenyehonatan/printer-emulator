@@ -76,7 +76,7 @@ npm run start:emulator                 # defaults to 631; set PORT to change
 
 ```bash
 npm install
-npm test        # vitest: codec round-trip, decoder, formats, buffer reader, mDNS, Get-Job-Attributes
+npm test        # vitest: codec round-trip, decoder, formats, raster-info, buffer reader, mDNS, Get-Jobs, Get-Job-Attributes, Cancel-Job
 ```
 
 **Runtime dependency:** `bonjour-service` provides the mDNS/DNS-SD responder
@@ -103,6 +103,21 @@ npx tsx src/index.ts scenario   # run the scenarios
 - `Get-Job-Attributes` — looks a job up by `job-id` (or `job-uri`) and returns
   its job-state, job-state-reasons, job-name, originating user, timestamps, and
   impressions-completed; `client-error-not-found` for an unknown job.
+- `Get-Jobs` — lists queued jobs honoring the `which-jobs` filter
+  (`not-completed` [default] / `completed` / `all`) and capping the count with
+  `limit`, returned in stable job-id order; `successful-ok` with an empty set
+  when nothing matches.
+- `Cancel-Job` — cancels a cancelable job via the state machine (`successful-ok`,
+  job → canceled); returns `client-error-not-possible` for a job already in a
+  terminal state (completed/canceled/aborted) and `client-error-not-found` for
+  an unknown job.
+- PWG-Raster / Apple-URF page-header parsing — `documents/raster-info.ts` walks
+  the fixed-layout page headers (PWG `RaS2`, URF `UNIRAST\0`), counting pages
+  and reading each page's pixel width/height + resolution; the PackBits line
+  stream is consumed only enough to skip between page headers. Print-Job uses
+  the parsed page count to populate `job-impressions`/`job-impressions-completed`
+  for raster jobs. Rendering the actual raster pixels is still out of scope
+  (header parse only).
 - `Validate-Job` — returns `successful-ok`.
 - **mDNS / AirPrint advertising** (`transport/mdns.ts`) — real `_ipp._tcp`
   multicast advertisement via the `bonjour-service` runtime dependency, plus the
@@ -118,10 +133,9 @@ npx tsx src/index.ts scenario   # run the scenarios
 - IPP-over-HTTP server + client transport on port 631 (override via `PORT`).
 
 **Stubbed / partial** (all return valid IPP responses; none throw)
-- `Get-Jobs` — lists the queue but ignores `limit` / `which-jobs` filters.
-- `Cancel-Job` — looks up + cancels by job-id; doesn't distinguish
-  already-completed (`client-error-not-possible`).
-- Real document rendering/rasterization — documents are accepted and measured,
-  not rendered (`documents/document.ts` `PassthroughHandler`).
+- Real document rendering/rasterization — documents are accepted and measured
+  (and, for PWG/URF, their page headers parsed for page count + geometry), but
+  the raster pixels are not rendered (`documents/document.ts` `PassthroughHandler`
+  / `RasterDocumentHandler`).
 - Unknown operations — answered with `server-error-operation-not-supported`.
 ```
