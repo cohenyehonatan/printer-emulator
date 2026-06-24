@@ -29,6 +29,7 @@ import {
   keywordAttr,
   integerAttr,
   integersAttr,
+  enumAttr,
   booleanAttr,
   type IppAttribute,
 } from '../ipp/attribute.js';
@@ -79,24 +80,54 @@ export class IppClient {
    * `jobHoldUntil` (RFC 8011 §5.2.2: `no-hold`, `indefinite`, a named time
    * value, …) to hold the job as `pending-held` instead of printing it — the
    * job then waits for a Release-Job (or a Hold-Job with `no-hold`). `no-hold`
-   * (or omitting it) prints normally. The value travels in the job-attributes
-   * group as the Job Template attribute it is.
+   * (or omitting it) prints normally.
+   *
+   * The common print Job Template attributes — `printColorMode`
+   * (`color`/`monochrome`/`auto`), `printQuality` (3/4/5), `sides`,
+   * `orientation` (3–6), and `media` — are sent when supplied. They (and
+   * `job-hold-until`) travel in the job-attributes group as the Job Template
+   * attributes they are. `printColorMode='monochrome'` makes the printer render
+   * a color document in grayscale.
    */
   async printJob(
     docBytes: Buffer,
     format = 'application/octet-stream',
     jobName = 'print-job',
-    options: { jobHoldUntil?: string } = {}
+    options: {
+      jobHoldUntil?: string;
+      printColorMode?: string;
+      printQuality?: number;
+      sides?: string;
+      orientation?: number;
+      media?: string;
+    } = {}
   ): Promise<IppResponse> {
+    const jobAttrs: IppAttribute[] = [];
+    if (options.jobHoldUntil !== undefined) {
+      jobAttrs.push(keywordAttr('job-hold-until', options.jobHoldUntil));
+    }
+    if (options.printColorMode !== undefined) {
+      jobAttrs.push(keywordAttr('print-color-mode', options.printColorMode));
+    }
+    if (options.printQuality !== undefined) {
+      jobAttrs.push(enumAttr('print-quality', options.printQuality));
+    }
+    if (options.sides !== undefined) {
+      jobAttrs.push(keywordAttr('sides', options.sides));
+    }
+    if (options.orientation !== undefined) {
+      jobAttrs.push(enumAttr('orientation-requested', options.orientation));
+    }
+    if (options.media !== undefined) {
+      jobAttrs.push(keywordAttr('media', options.media));
+    }
     const request = this.baseRequest(
       OperationIds.PRINT_JOB,
       [
         nameWithoutLangAttr('job-name', jobName),
         mimeMediaTypeAttr('document-format', format),
       ],
-      options.jobHoldUntil !== undefined
-        ? [keywordAttr('job-hold-until', options.jobHoldUntil)]
-        : []
+      jobAttrs
     );
     request.data = docBytes;
     return this.send(request);
@@ -373,6 +404,11 @@ export class IppClient {
       jobPriority?: number;
       copies?: number;
       jobHoldUntil?: string;
+      printColorMode?: string;
+      printQuality?: number;
+      sides?: string;
+      orientation?: number;
+      media?: string;
     }
   ): Promise<IppResponse> {
     const jobAttrs: IppAttribute[] = [];
@@ -387,6 +423,21 @@ export class IppClient {
     }
     if (attrs.jobHoldUntil !== undefined) {
       jobAttrs.push(keywordAttr('job-hold-until', attrs.jobHoldUntil));
+    }
+    if (attrs.printColorMode !== undefined) {
+      jobAttrs.push(keywordAttr('print-color-mode', attrs.printColorMode));
+    }
+    if (attrs.printQuality !== undefined) {
+      jobAttrs.push(enumAttr('print-quality', attrs.printQuality));
+    }
+    if (attrs.sides !== undefined) {
+      jobAttrs.push(keywordAttr('sides', attrs.sides));
+    }
+    if (attrs.orientation !== undefined) {
+      jobAttrs.push(enumAttr('orientation-requested', attrs.orientation));
+    }
+    if (attrs.media !== undefined) {
+      jobAttrs.push(keywordAttr('media', attrs.media));
     }
     const request = this.baseRequest(
       OperationIds.SET_JOB_ATTRIBUTES,

@@ -118,7 +118,7 @@ ippfind _ipps._tcp                 # or: dns-sd -B _ipps._tcp
 
 ```bash
 npm install
-npm test        # vitest: codec round-trip, decoder, formats, raster-info, buffer reader, mDNS, Get-Jobs, Get-Job-Attributes, Cancel-Job, Purge-Jobs, Cancel-My-Jobs, Hold/Release-Job, Restart-Job, job-hold-until, Pause/Resume/Identify-Printer, Set-Printer/Job-Attributes, Create/Send/Close multi-doc, requested-attributes
+npm test        # vitest: codec round-trip, decoder, formats, raster-info, buffer reader, mDNS, Get-Jobs, Get-Job-Attributes, Cancel-Job, Purge-Jobs, Cancel-My-Jobs, Hold/Release-Job, Restart-Job, job-hold-until, print Job Template attrs (print-color-mode/quality/sides/orientation/media), Pause/Resume/Identify-Printer, Set-Printer/Job-Attributes, Create/Send/Close multi-doc, requested-attributes
 ```
 
 **Runtime dependency:** `bonjour-service` provides the mDNS/DNS-SD responder
@@ -237,6 +237,34 @@ npx tsx src/index.ts scenario   # run the scenarios
     test run never depends on real-time waits and always self-exits cleanly.
   - any unrecognized keyword — held (defaults to `indefinite` behavior), never an
     error.
+- **Print Job Template attributes** (RFC 8011 §5.2 / PWG 5100.13) — the common
+  rendering attributes real clients (CUPS, AirPrint, ipptool) send alongside
+  `copies`. Accepted in the job-attributes group of **Print-Job** and
+  **Create-Job**, settable on a non-terminal job via **Set-Job-Attributes**, and
+  echoed (only once a client supplied them) in **Get-Job-Attributes** /
+  **Get-Jobs**. An unknown/invalid value is clamped/ignored to the default
+  (never an error). Each is advertised with both a `*-supported` and a
+  `*-default` in Get-Printer-Attributes:
+
+  | Attribute | Type | Supported values | Default |
+  |---|---|---|---|
+  | `print-color-mode` | keyword | `auto`, `color`, `monochrome` | `auto` |
+  | `print-quality` | enum | `3` draft, `4` normal, `5` high | `4` (normal) |
+  | `sides` | keyword | `one-sided`, `two-sided-long-edge`, `two-sided-short-edge` | `one-sided` |
+  | `orientation-requested` | enum | `3` portrait, `4` landscape, `5` reverse-landscape, `6` reverse-portrait | `3` (portrait) |
+  | `media` | keyword | `iso_a4_210x297mm`, `na_letter_8.5x11in` | `iso_a4_210x297mm` |
+
+  Omitted attributes are **not** echoed on the job (the printer's `*-default`
+  advertises the effective value), keeping the default job-attribute set
+  unchanged for jobs that never carried them.
+
+  **`print-color-mode=monochrome` actually changes the output.** When a job's
+  `print-color-mode` is `monochrome`, the in-process PWG/URF render path
+  (`--raster-out` / `RASTER_OUT`) converts a decoded **color** page to grayscale
+  via Rec. 601 luma (`0.299R + 0.587G + 0.114B`) and writes a grayscale PNG —
+  so a color document prints monochrome. `color`/`auto` preserve the source
+  (color → color, gray → gray). The Ghostscript-backed PDF/PostScript path is
+  left in color regardless (gs colour control isn't threaded through).
 - `Pause-Printer` (0x0010) — pauses the printer: drives `printer-state` to
   `stopped` (5) with `printer-state-reasons` = `paused`, and **defers job
   execution**. While paused, the job-running paths (Print-Job after enqueue;
@@ -272,7 +300,10 @@ npx tsx src/index.ts scenario   # run the scenarios
   reflected by Get-Job-Attributes / Get-Jobs. **Settable attributes:** `job-name`,
   `job-priority` (1–100), `copies` (≥1), `job-hold-until` (which reuses the
   existing hold-until logic — a holding value re-holds the job, `no-hold`
-  releases and runs it; advertised in `job-settable-attributes-supported`). Only
+  releases and runs it), plus the print Job Template attributes
+  `print-color-mode`, `print-quality`, `sides`, `orientation-requested`, and
+  `media` (each clamped/ignored to its default on an unadvertised value; all
+  advertised in `job-settable-attributes-supported`). Only
   a **non-terminal** job (pending / pending-held / processing) is settable; a
   terminal job (completed / canceled / aborted) → `client-error-not-possible`;
   an unknown job → `client-error-not-found`. Unsettable/unknown attributes are
