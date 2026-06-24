@@ -265,6 +265,18 @@ npx tsx src/index.ts scenario   # run the scenarios
   so a color document prints monochrome. `color`/`auto` preserve the source
   (color → color, gray → gray). The Ghostscript-backed PDF/PostScript path is
   left in color regardless (gs colour control isn't threaded through).
+
+  **`orientation-requested` actually rotates the output.** When a job sets
+  `orientation-requested`, the in-process PWG/URF render path rotates the decoded
+  page (gray or color) before encoding the PNG: `3` portrait → no rotation, `4`
+  landscape → **90° clockwise**, `5` reverse-landscape → **270° clockwise**, `6`
+  reverse-portrait → **180°**. 90°/270° transpose the page, so a landscape job's
+  PNG comes out with its width and height swapped. (CW vs CCW: we rotate
+  clockwise by the mapped angle; IPP conventionally reads landscape as a 90° CCW
+  rotation, but the emulator only needs `4` and `5` to differ by 180°, which
+  90°-CW vs 270°-CW satisfies.) An unknown/absent orientation leaves the page
+  unrotated. Like `print-color-mode`, the Ghostscript-backed PDF/PostScript path
+  is **not** rotated (gs orientation control isn't threaded through).
 - `Pause-Printer` (0x0010) — pauses the printer: drives `printer-state` to
   `stopped` (5) with `printer-state-reasons` = `paused`, and **defers job
   execution**. While paused, the job-running paths (Print-Job after enqueue;
