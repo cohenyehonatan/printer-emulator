@@ -8,10 +8,11 @@
  *     aborted), or `all`. An unrecognized value falls back to the default.
  *   - `limit` (integer): caps the number of returned job groups (ignored when
  *     absent or non-positive).
- * Jobs are returned in stable job-id order. The standard job-attributes set is
- * always returned (mirroring Get-Job-Attributes / Get-Printer-Attributes, which
- * likewise do not yet sub-select on `requested-attributes`). Returns
- * successful-ok with an empty set when nothing matches. Never throws.
+ * Jobs are returned in stable job-id order. The standard per-job attribute set
+ * is filtered through the `requested-attributes` sub-selection (mirroring
+ * Get-Job-Attributes / Get-Printer-Attributes); when that attribute is absent
+ * the full per-job set is returned. Returns successful-ok with an empty set
+ * when nothing matches. Never throws.
  */
 
 import {
@@ -40,6 +41,10 @@ import {
   type IppRequest,
   type IppResponse,
 } from '../message.js';
+import {
+  readRequestedAttributes,
+  selectAttributes,
+} from '../requested-attributes.js';
 import type { Job } from '../../printer/job.js';
 import type { OperationContext } from '../dispatcher.js';
 
@@ -76,13 +81,20 @@ export function handleGetJobs(
   const selected =
     limit !== undefined && limit > 0 ? filtered.slice(0, limit) : filtered;
 
+  // requested-attributes sub-selection: absent → full per-job set (back-compat).
+  const requested = readRequestedAttributes(request);
   const jobGroups = selected.map((job) =>
-    jobGroup([
-      integerAttr('job-id', job.id),
-      uriAttr('job-uri', `${ctx.identity.uri}/jobs/${job.id}`),
-      enumAttr('job-state', job.stateValue),
-      nameWithoutLangAttr('job-name', job.jobName),
-    ])
+    jobGroup(
+      selectAttributes(
+        [
+          integerAttr('job-id', job.id),
+          uriAttr('job-uri', `${ctx.identity.uri}/jobs/${job.id}`),
+          enumAttr('job-state', job.stateValue),
+          nameWithoutLangAttr('job-name', job.jobName),
+        ],
+        requested
+      )
+    )
   );
 
   return {

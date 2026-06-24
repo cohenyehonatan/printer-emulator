@@ -9,6 +9,7 @@
 
 import {
   PrinterStates,
+  OperationIds,
   type PrinterStateValue,
   IPP_VERSION_MAJOR,
   IPP_VERSION_MINOR,
@@ -23,6 +24,7 @@ import {
   textWithoutLangAttr,
   mimeMediaTypeAttr,
 } from '../ipp/attribute.js';
+import { ValueTags } from '../ipp/constants.js';
 
 export interface PrinterIdentity {
   name: string;
@@ -84,7 +86,23 @@ export function buildPrinterAttributes(
       version === '2.0' ? '2.0' : version,
       '1.1'
     ),
-    enumAttr('operations-supported', 0x0002), // Print-Job; extended at runtime
+    // operations-supported (1setOf enum) — every operation the dispatcher
+    // handles, including the multi-document Create-Job/Send-Document/Close-Job
+    // lifecycle.
+    {
+      name: 'operations-supported',
+      values: [
+        OperationIds.PRINT_JOB,
+        OperationIds.VALIDATE_JOB,
+        OperationIds.CREATE_JOB,
+        OperationIds.SEND_DOCUMENT,
+        OperationIds.CANCEL_JOB,
+        OperationIds.GET_JOB_ATTRIBUTES,
+        OperationIds.GET_JOBS,
+        OperationIds.GET_PRINTER_ATTRIBUTES,
+        OperationIds.CLOSE_JOB,
+      ].map((op) => ({ tag: ValueTags.ENUM, value: op })),
+    },
     keywordAttr('charset-configured', 'utf-8'),
     keywordAttr('charset-supported', 'utf-8'),
     keywordAttr('natural-language-configured', 'en'),

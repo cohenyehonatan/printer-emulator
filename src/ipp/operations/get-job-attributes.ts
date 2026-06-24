@@ -36,6 +36,7 @@ import {
   type IppRequest,
   type IppResponse,
 } from '../message.js';
+import { applyRequestedAttributes } from '../requested-attributes.js';
 import type { Job } from '../../printer/job.js';
 import type { OperationContext } from '../dispatcher.js';
 
@@ -71,7 +72,7 @@ export function handleGetJobAttributes(
           DEFAULT_NATURAL_LANGUAGE
         ),
       ]),
-      jobGroup(buildJobAttributes(job, ctx)),
+      jobGroup(applyRequestedAttributes(request, buildJobAttributes(job, ctx))),
     ],
   };
 }

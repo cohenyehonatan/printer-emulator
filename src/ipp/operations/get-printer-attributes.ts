@@ -23,12 +23,18 @@ import {
   type IppResponse,
 } from '../message.js';
 import { buildPrinterAttributes } from '../../printer/printer-attributes.js';
+import { applyRequestedAttributes } from '../requested-attributes.js';
 import type { OperationContext } from '../dispatcher.js';
 
 export function handleGetPrinterAttributes(
   request: IppRequest,
   ctx: OperationContext
 ): IppResponse {
+  const printerAttrs = applyRequestedAttributes(
+    request,
+    buildPrinterAttributes(ctx.identity, ctx.printerState())
+  );
+
   return {
     versionMajor: request.versionMajor,
     versionMinor: request.versionMinor,
@@ -42,9 +48,7 @@ export function handleGetPrinterAttributes(
           DEFAULT_NATURAL_LANGUAGE
         ),
       ]),
-      printerGroup(
-        buildPrinterAttributes(ctx.identity, ctx.printerState())
-      ),
+      printerGroup(printerAttrs),
     ],
   };
 }
