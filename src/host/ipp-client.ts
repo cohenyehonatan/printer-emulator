@@ -27,6 +27,7 @@ import {
   mimeMediaTypeAttr,
   keywordAttr,
   integerAttr,
+  type IppAttribute,
 } from '../ipp/attribute.js';
 import {
   operationGroup,
@@ -77,11 +78,19 @@ export class IppClient {
     return this.send(request);
   }
 
-  /** Get-Jobs: list jobs on the printer. */
-  async getJobs(): Promise<IppResponse> {
-    const request = this.baseRequest(OperationIds.GET_JOBS, [
-      keywordAttr('which-jobs', 'not-completed'),
-    ]);
+  /**
+   * Get-Jobs: list jobs on the printer. Optionally filter by `whichJobs`
+   * (not-completed / completed / all) and cap the result count with `limit`.
+   */
+  async getJobs(
+    options: { limit?: number; whichJobs?: string } = {}
+  ): Promise<IppResponse> {
+    const { limit, whichJobs = 'not-completed' } = options;
+    const opAttrs: IppAttribute[] = [keywordAttr('which-jobs', whichJobs)];
+    if (limit !== undefined) {
+      opAttrs.push(integerAttr('limit', limit));
+    }
+    const request = this.baseRequest(OperationIds.GET_JOBS, opAttrs);
     return this.send(request);
   }
 
@@ -98,7 +107,7 @@ export class IppClient {
   /** Build a request with the mandatory operation attributes. */
   private baseRequest(
     operationId: number,
-    extraOpAttrs: ReturnType<typeof keywordAttr>[] = []
+    extraOpAttrs: IppAttribute[] = []
   ): IppRequest {
     return {
       versionMajor: IPP_VERSION_MAJOR,
