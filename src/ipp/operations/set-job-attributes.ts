@@ -11,7 +11,13 @@
  *   - `copies`          (integer)     → Job.setCopies (≥1)
  *   - `job-hold-until`  (keyword)     → re-holds/releases via the existing
  *                                       hold-until logic (Job.holdWith)
- * The applied values are reflected by Get-Job-Attributes / Get-Jobs. Returns
+ *   - `print-color-mode`      (keyword) → Job.setPrintColorMode
+ *   - `print-quality`         (enum)    → Job.setPrintQuality
+ *   - `sides`                 (keyword) → Job.setSides
+ *   - `orientation-requested` (enum)    → Job.setOrientation
+ *   - `media`                 (keyword) → Job.setMedia
+ * Each print Job Template setter clamps/ignores an unadvertised value rather
+ * than failing. The applied values are reflected by Get-Job-Attributes / Get-Jobs. Returns
  * successful-ok plus the job-state group; unsettable/unknown attributes are
  * surfaced in an `unsupported-attributes` group rather than failing the op.
  *
@@ -52,6 +58,7 @@ import {
   type IppResponse,
 } from '../message.js';
 import { JOB_SETTABLE_ATTRIBUTES } from '../../printer/job.js';
+import { jobTemplateAttributes } from './job-template-attrs.js';
 import type { OperationContext } from '../dispatcher.js';
 
 const SETTABLE = new Set<string>(JOB_SETTABLE_ATTRIBUTES);
@@ -91,6 +98,21 @@ export function handleSetJobAttributes(
         break;
       case 'copies':
         job.setCopies(firstNumber(attr));
+        break;
+      case 'print-color-mode':
+        job.setPrintColorMode(firstString(attr));
+        break;
+      case 'print-quality':
+        job.setPrintQuality(firstNumber(attr));
+        break;
+      case 'sides':
+        job.setSides(firstString(attr));
+        break;
+      case 'orientation-requested':
+        job.setOrientation(firstNumber(attr));
+        break;
+      case 'media':
+        job.setMedia(firstString(attr));
         break;
       case 'job-hold-until': {
         // Reuse the existing hold-until policy: a holding value re-holds the
@@ -132,6 +154,7 @@ export function handleSetJobAttributes(
       ...(job.holdUntil !== undefined
         ? [keywordAttr('job-hold-until', job.holdUntil)]
         : []),
+      ...jobTemplateAttributes(job),
     ])
   );
 

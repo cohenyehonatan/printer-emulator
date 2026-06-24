@@ -47,6 +47,7 @@ import {
   readRequestedAttributes,
   selectAttributes,
 } from '../requested-attributes.js';
+import { jobTemplateAttributes } from './job-template-attrs.js';
 import type { Job } from '../../printer/job.js';
 import type { OperationContext } from '../dispatcher.js';
 
@@ -105,6 +106,9 @@ export function handleGetJobs(
     if (job.copies !== undefined) {
       perJob.push(integerAttr('copies', job.copies));
     }
+    // Echo the common print Job Template attributes only when the client
+    // supplied them (keeps the default per-job set unchanged otherwise).
+    perJob.push(...jobTemplateAttributes(job));
     return jobGroup(selectAttributes(perJob, requested));
   });
 

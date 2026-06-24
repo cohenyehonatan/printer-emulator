@@ -13,6 +13,16 @@ import {
   OperationIds,
   JobHoldUntil,
   JOB_HOLD_UNTIL_DEFAULT,
+  PrintColorMode,
+  PRINT_COLOR_MODE_DEFAULT,
+  PrintQuality,
+  PRINT_QUALITY_DEFAULT,
+  Sides,
+  SIDES_DEFAULT,
+  OrientationRequested,
+  ORIENTATION_REQUESTED_DEFAULT,
+  Media,
+  MEDIA_DEFAULT,
   type PrinterStateValue,
   IPP_VERSION_MAJOR,
   IPP_VERSION_MINOR,
@@ -20,6 +30,7 @@ import {
 import {
   type IppAttribute,
   enumAttr,
+  enumsAttr,
   booleanAttr,
   keywordAttr,
   uriAttr,
@@ -210,10 +221,41 @@ export function buildPrinterAttributes(
     booleanAttr('printer-is-accepting-jobs', true),
     keywordAttr('pdl-override-supported', 'attempted'),
     keywordAttr('compression-supported', 'none'),
-    keywordAttr('media-default', 'iso_a4_210x297mm'),
-    keywordAttr('media-supported', 'iso_a4_210x297mm', 'na_letter_8.5x11in'),
-    keywordAttr('sides-supported', 'one-sided', 'two-sided-long-edge'),
-    keywordAttr('print-color-mode-supported', 'monochrome', 'color'),
+    // Common print Job Template capabilities (RFC 8011 §5.2 / PWG 5100.13): the
+    // value set this emulator accepts on Print-Job/Create-Job/Set-Job-Attributes
+    // plus the default applied when a client omits each. `print-color-mode`
+    // actually changes output — `monochrome` forces a grayscale raster.
+    keywordAttr('media-supported', Media.ISO_A4, Media.NA_LETTER),
+    keywordAttr('media-default', MEDIA_DEFAULT),
+    keywordAttr(
+      'sides-supported',
+      Sides.ONE_SIDED,
+      Sides.TWO_SIDED_LONG_EDGE,
+      Sides.TWO_SIDED_SHORT_EDGE
+    ),
+    keywordAttr('sides-default', SIDES_DEFAULT),
+    keywordAttr(
+      'print-color-mode-supported',
+      PrintColorMode.AUTO,
+      PrintColorMode.COLOR,
+      PrintColorMode.MONOCHROME
+    ),
+    keywordAttr('print-color-mode-default', PRINT_COLOR_MODE_DEFAULT),
+    enumsAttr(
+      'print-quality-supported',
+      PrintQuality.DRAFT,
+      PrintQuality.NORMAL,
+      PrintQuality.HIGH
+    ),
+    enumAttr('print-quality-default', PRINT_QUALITY_DEFAULT),
+    enumsAttr(
+      'orientation-requested-supported',
+      OrientationRequested.PORTRAIT,
+      OrientationRequested.LANDSCAPE,
+      OrientationRequested.REVERSE_LANDSCAPE,
+      OrientationRequested.REVERSE_PORTRAIT
+    ),
+    enumAttr('orientation-requested-default', ORIENTATION_REQUESTED_DEFAULT),
     keywordAttr('urf-supported', ...URF_SUPPORTED.split(',')),
     // job-hold-until (RFC 8011 §5.2.2): the keyword values this emulator accepts
     // and the default applied when a client omits it (`no-hold` — run normally).

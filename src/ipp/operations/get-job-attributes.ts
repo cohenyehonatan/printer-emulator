@@ -37,6 +37,7 @@ import {
   type IppResponse,
 } from '../message.js';
 import { applyRequestedAttributes } from '../requested-attributes.js';
+import { jobTemplateAttributes } from './job-template-attrs.js';
 import type { Job } from '../../printer/job.js';
 import type { OperationContext } from '../dispatcher.js';
 
@@ -111,6 +112,11 @@ function buildJobAttributes(job: Job, ctx: OperationContext): IppAttribute[] {
   if (job.copies !== undefined) {
     attrs.push(integerAttr('copies', job.copies));
   }
+
+  // Echo the common print Job Template attributes (print-color-mode,
+  // print-quality, sides, orientation-requested, media) only once a client
+  // supplied them — same conditional treatment as copies/job-priority.
+  attrs.push(...jobTemplateAttributes(job));
 
   return attrs;
 }

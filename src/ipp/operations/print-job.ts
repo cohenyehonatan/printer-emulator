@@ -31,6 +31,8 @@ import {
 } from '../message.js';
 import { DelimiterTags } from '../constants.js';
 import { readJobHoldUntil, holdUntilHolds } from '../hold-until.js';
+import { readJobTemplate } from '../job-template.js';
+import { jobTemplateAttributes } from './job-template-attrs.js';
 import { detectFormat, Mime } from '../../documents/formats.js';
 import { parseRasterInfo } from '../../documents/raster-info.js';
 import type { Document } from '../../documents/document.js';
@@ -49,6 +51,12 @@ export function handlePrintJob(
   // job-hold-until (RFC 8011 §5.2.2): a holding value (anything but `no-hold`)
   // makes the job start `pending-held` so it is NOT run until a Release-Job.
   const holdUntil = readJobHoldUntil(opAttrs, jobAttrs);
+
+  // Common print Job Template attributes (print-color-mode, print-quality,
+  // sides, orientation-requested, media). Unknown/invalid values normalize to
+  // undefined and the printer default applies. print-color-mode drives the
+  // render path (monochrome forces grayscale).
+  const template = readJobTemplate(jobAttrs);
 
   const bytes = request.data ?? Buffer.alloc(0);
   const requestedFormat = firstString(findAttr(opAttrs, 'document-format'));
@@ -81,6 +89,7 @@ export function handlePrintJob(
     ),
     impressions,
     holdUntil,
+    template,
   });
 
   // Emulated print: immediately drive the job to completion — UNLESS either:
@@ -118,6 +127,7 @@ export function handlePrintJob(
         ...(job.holdUntil !== undefined
           ? [keywordAttr('job-hold-until', job.holdUntil)]
           : []),
+        ...jobTemplateAttributes(job),
         integerAttr('job-impressions', job.impressions),
         integerAttr('job-impressions-completed', job.impressions),
       ]),

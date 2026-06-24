@@ -27,6 +27,8 @@ import {
   findAttr,
 } from '../attribute.js';
 import { readJobHoldUntil } from '../hold-until.js';
+import { readJobTemplate } from '../job-template.js';
+import { jobTemplateAttributes } from './job-template-attrs.js';
 import {
   operationGroup,
   jobGroup,
@@ -52,6 +54,11 @@ export function handleCreateJob(
   // as today; an explicit Hold-Job can re-hold it with a value.)
   const holdUntil = readJobHoldUntil(opAttrs, jobAttrs);
 
+  // Common print Job Template attributes carried on Create-Job (same group as
+  // job-hold-until). Stored on the job so Get-Job-Attributes echoes them and a
+  // later Send-Document render honors print-color-mode.
+  const template = readJobTemplate(jobAttrs);
+
   // Allocate an open job with no documents yet (pending-held).
   const job = ctx.queue.enqueue({
     printerUri: ctx.identity.uri,
@@ -59,6 +66,7 @@ export function handleCreateJob(
     requestingUserName: firstString(findAttr(opAttrs, 'requesting-user-name')),
     open: true,
     holdUntil,
+    template,
   });
 
   const jobUri = `${ctx.identity.uri}/jobs/${job.id}`;
@@ -83,6 +91,7 @@ export function handleCreateJob(
         ...(job.holdUntil !== undefined
           ? [keywordAttr('job-hold-until', job.holdUntil)]
           : []),
+        ...jobTemplateAttributes(job),
       ]),
     ],
   };
