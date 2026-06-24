@@ -118,3 +118,11 @@ export const IPP_CONTENT_TYPE = 'application/ipp';
  */
 export const DEFAULT_PORT = 631;
 export const DEMO_PORT = 6310;
+
+/**
+ * Default IPPS (IPP-over-TLS) port. 631 is shared with plaintext IPP in the
+ * real world, but the emulator runs both servers in one process, so IPPS gets
+ * its own port. Like DEFAULT_PORT, the canonical value is privileged; the CLI
+ * defaults to DEFAULT_TLS_PORT (6311) to avoid sudo. Override with TLS_PORT.
+ */
+export const DEFAULT_TLS_PORT = 6311;
