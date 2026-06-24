@@ -17,7 +17,8 @@
 
 import { JobStateMachine } from './state-machine.js';
 import { JobState, JobEvent, jobStateToValue } from './states.js';
-import type { JobStateValue } from '../ipp/constants.js';
+import { JobHoldUntil, type JobStateValue } from '../ipp/constants.js';
+import { holdUntilHolds } from '../ipp/hold-until.js';
 import type { Document } from '../documents/document.js';
 
 export interface JobInit {
@@ -43,6 +44,14 @@ export interface JobInit {
    * (PENDING) — the existing Print-Job behavior.
    */
   open?: boolean;
+  /**
+   * The requested `job-hold-until` keyword (RFC 8011 §5.2.2), if the client
+   * supplied one. Stored verbatim so Get-Job-Attributes can echo it. A value
+   * other than `no-hold` causes a single-shot Print-Job to start PENDING_HELD;
+   * `no-hold` (or absence) leaves the existing behavior. See hold-until.ts for
+   * the keyword→hold policy.
+   */
+  holdUntil?: string;
 }
 
 export class Job {
@@ -55,6 +64,12 @@ export class Job {
   private _impressions: number;
   /** Whether the job is still accepting documents (Create-Job/Send-Document). */
   private _open: boolean;
+  /**
+   * The job's current `job-hold-until` keyword (RFC 8011 §5.2.2), or undefined
+   * when the client never specified one. Mutated by Hold-Job/Release-Job so
+   * Get-Job-Attributes always echoes the effective value.
+   */
+  private _holdUntil: string | undefined;
   private readonly sm: JobStateMachine;
 
   constructor(init: JobInit) {
@@ -64,6 +79,7 @@ export class Job {
     this.requestingUserName = init.requestingUserName ?? 'anonymous';
     this.createdAt = new Date();
     this._open = init.open ?? false;
+    this._holdUntil = init.holdUntil;
 
     if (init.document) {
       this._documents.push(init.document);
@@ -75,9 +91,12 @@ export class Job {
     }
 
     // Multi-document jobs wait held for their documents; single-shot jobs are
-    // immediately pending.
+    // immediately pending — UNLESS a holding `job-hold-until` (anything but
+    // `no-hold`) was requested, in which case the single-shot job also starts
+    // PENDING_HELD and waits for a Release-Job.
+    const startHeld = this._open || holdUntilHolds(this._holdUntil);
     this.sm = new JobStateMachine(
-      this._open ? JobState.PENDING_HELD : JobState.PENDING
+      startHeld ? JobState.PENDING_HELD : JobState.PENDING
     );
   }
 
@@ -118,6 +137,36 @@ export class Job {
   /** Whether the job is still open for more documents (Send-Document). */
   get isOpen(): boolean {
     return this._open;
+  }
+
+  /**
+   * The job's current `job-hold-until` keyword (RFC 8011 §5.2.2), or undefined
+   * when none was ever specified. Echoed by Get-Job-Attributes.
+   */
+  get holdUntil(): string | undefined {
+    return this._holdUntil;
+  }
+
+  /**
+   * Set/replace the `job-hold-until` keyword. Used by Hold-Job to record the
+   * value the client held with (so it can be echoed) and by Release-Job to
+   * clear an effective hold to `no-hold`.
+   */
+  setHoldUntil(value: string | undefined): void {
+    this._holdUntil = value;
+  }
+
+  /**
+   * Whether the job is currently held BECAUSE of `job-hold-until` (i.e. it is
+   * `pending-held`, not still open for documents, and was held with a holding
+   * value). Drives the `job-hold-until-specified` job-state-reason.
+   */
+  get heldByHoldUntil(): boolean {
+    return (
+      !this._open &&
+      this.sm.getState() === JobState.PENDING_HELD &&
+      holdUntilHolds(this._holdUntil)
+    );
   }
 
   /**
@@ -195,6 +244,27 @@ export class Job {
   }
 
   /**
+   * Hold the job with a specific `job-hold-until` keyword (Hold-Job, 0x000C).
+   * Records the keyword (echoed by Get-Job-Attributes) and either holds or
+   * releases per RFC 8011 §5.2.2:
+   *   - `no-hold` ⇒ Hold-Job effectively RELEASES the hold (equivalent to
+   *     Release-Job): a held job is released to pending and run; an unheld job
+   *     is left running. Returns release()'s result.
+   *   - any other value (indefinite / a named time value / unrecognized) ⇒ the
+   *     job is held as `pending-held` via hold(). Returns hold()'s result.
+   * `defer` is honored on the release path (printer paused → leave pending for
+   * runPendingJobs()). Never throws.
+   */
+  holdWith(value: string | undefined, defer = false): boolean {
+    this._holdUntil = value;
+    if (!holdUntilHolds(value)) {
+      // no-hold (or absence) on Hold-Job means "release the hold".
+      return this.release(defer);
+    }
+    return this.hold();
+  }
+
+  /**
    * Release the job (Release-Job, 0x000D). A PENDING_HELD job is released to
    * PENDING (JobEvent.RELEASE) and then run to completion via process(), so a
    * held job actually prints on release — reusing the same pending → processing
@@ -216,8 +286,10 @@ export class Job {
       return true;
     }
     this.sm.transition(JobEvent.RELEASE);
-    // The job is no longer waiting for more documents.
+    // The job is no longer waiting for more documents, and any `job-hold-until`
+    // hold has been cleared — the effective value is now `no-hold`.
     this._open = false;
+    this._holdUntil = JobHoldUntil.NO_HOLD;
     // Run the emulated print now unless deferred (printer paused) — a deferred
     // job is left `pending` for Resume-Printer's runPendingJobs().
     if (!defer) this.process();
