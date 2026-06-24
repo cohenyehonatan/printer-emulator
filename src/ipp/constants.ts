@@ -20,6 +20,8 @@ export const OperationIds = {
   GET_JOB_ATTRIBUTES: 0x0009,
   GET_JOBS: 0x000a,
   GET_PRINTER_ATTRIBUTES: 0x000b,
+  HOLD_JOB: 0x000c,
+  RELEASE_JOB: 0x000d,
   CLOSE_JOB: 0x003b,
 } as const;
 
