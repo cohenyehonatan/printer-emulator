@@ -27,6 +27,7 @@ export type OperationId = (typeof OperationIds)[keyof typeof OperationIds];
 export const StatusCodes = {
   SUCCESSFUL_OK: 0x0000,
   CLIENT_ERROR_BAD_REQUEST: 0x0400,
+  CLIENT_ERROR_NOT_POSSIBLE: 0x0405,
   CLIENT_ERROR_NOT_FOUND: 0x0406,
   SERVER_ERROR_OPERATION_NOT_SUPPORTED: 0x0501,
 } as const;
