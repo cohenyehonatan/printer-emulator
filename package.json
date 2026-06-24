@@ -1,0 +1,23 @@
+{
+  "name": "printer-emulator",
+  "version": "0.1.0",
+  "description": "IPP/AirPrint printer emulator (IPP Everywhere over HTTP, CUPS-compatible)",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "start:emulator": "tsx src/index.ts emulator",
+    "start:client": "tsx src/index.ts client",
+    "scenario": "tsx src/index.ts scenario",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "tsx": "^4.19.0",
+    "vitest": "^3.0.0",
+    "@types/node": "^22.0.0"
+  }
+}
