@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildAirPrintService,
+  buildIppsService,
   resourcePathFromUri,
   UNIVERSAL_SUBTYPE,
 } from '../../src/transport/mdns.js';
@@ -63,5 +64,50 @@ describe('AirPrint mDNS service construction', () => {
     });
     const txt = svc.txt as Record<string, string>;
     expect(txt.adminurl).toBe('http://localhost:631/');
+  });
+});
+
+/**
+ * The IPPS (`_ipps._tcp`, IPP-over-TLS) service builder — same pure, socket-free
+ * assertions as the `_ipp._tcp` one above.
+ */
+describe('IPPS mDNS service construction', () => {
+  it('builds an _ipps._tcp service on the TLS port with the universal subtype', () => {
+    const svc = buildIppsService({
+      identity: DEFAULT_IDENTITY,
+      port: 6311,
+      host: 'printer.local',
+    });
+
+    expect(svc.type).toBe('ipps');
+    expect(svc.protocol).toBe('tcp');
+    expect(svc.port).toBe(6311);
+    expect(svc.name).toBe(DEFAULT_IDENTITY.name);
+    expect(svc.subtypes).toContain(UNIVERSAL_SUBTYPE);
+  });
+
+  it('advertises TLS=1.2, rp=ipp/print, and an https adminurl on the TLS port', () => {
+    const svc = buildIppsService({
+      identity: DEFAULT_IDENTITY,
+      port: 6311,
+      host: 'printer.local',
+    });
+    const txt = svc.txt as Record<string, string>;
+
+    expect(txt.TLS).toBe('1.2');
+    expect(txt.rp).toBe('ipp/print');
+    expect(txt.adminurl).toBe('https://printer.local:6311/');
+    expect(txt.ty).toBe(DEFAULT_IDENTITY.makeAndModel);
+    expect(txt.UUID).toBe(DEFAULT_IDENTITY.uuid);
+    expect(txt.txtvers).toBe('1');
+  });
+
+  it('defaults the host to localhost when none is given', () => {
+    const svc = buildIppsService({
+      identity: DEFAULT_IDENTITY,
+      port: 6311,
+    });
+    const txt = svc.txt as Record<string, string>;
+    expect(txt.adminurl).toBe('https://localhost:6311/');
   });
 });
