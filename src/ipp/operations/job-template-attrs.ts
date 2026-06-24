@@ -2,7 +2,7 @@
  * Shared emitter for the common print Job Template attributes on a Job.
  *
  * `print-color-mode`, `print-quality`, `sides`, `orientation-requested`,
- * `media`, and `page-ranges` are echoed by Print-Job/Create-Job,
+ * `media`, `page-ranges`, and `number-up` are echoed by Print-Job/Create-Job,
  * Get-Job-Attributes, Get-Jobs, and Set-Job-Attributes — but only once the
  * client supplied a value (mirroring how `copies` is conditionally emitted).
  * Centralizing the build keeps every response consistent and the value-tags
@@ -12,6 +12,7 @@
 import {
   keywordAttr,
   enumAttr,
+  integerAttr,
   rangesAttr,
   type IppAttribute,
   type IppRange,
@@ -44,6 +45,9 @@ export function jobTemplateAttributes(job: Job): IppAttribute[] {
   if (job.pageRanges !== undefined) {
     const ranges: IppRange[] = job.pageRanges.map((r) => [r.lower, r.upper]);
     attrs.push(rangesAttr('page-ranges', ...ranges));
+  }
+  if (job.numberUp !== undefined) {
+    attrs.push(integerAttr('number-up', job.numberUp));
   }
   return attrs;
 }

@@ -118,7 +118,7 @@ ippfind _ipps._tcp                 # or: dns-sd -B _ipps._tcp
 
 ```bash
 npm install
-npm test        # vitest: codec round-trip, decoder, formats, raster-info, buffer reader, mDNS, Get-Jobs, Get-Job-Attributes, Cancel-Job, Purge-Jobs, Cancel-My-Jobs, Hold/Release-Job, Restart-Job, job-hold-until, print Job Template attrs (print-color-mode/quality/sides/orientation/media), page-ranges (codec round-trip + parse/echo + render filter), Pause/Resume/Identify-Printer, Set-Printer/Job-Attributes, Create/Send/Close multi-doc, requested-attributes
+npm test        # vitest: codec round-trip, decoder, formats, raster-info, buffer reader, mDNS, Get-Jobs, Get-Job-Attributes, Cancel-Job, Purge-Jobs, Cancel-My-Jobs, Hold/Release-Job, Restart-Job, job-hold-until, print Job Template attrs (print-color-mode/quality/sides/orientation/media), page-ranges (codec round-trip + parse/echo + render filter), number-up (grid/composite helpers + parse/echo/advertise + N-up render), Pause/Resume/Identify-Printer, Set-Printer/Job-Attributes, Create/Send/Close multi-doc, requested-attributes
 ```
 
 **Runtime dependency:** `bonjour-service` provides the mDNS/DNS-SD responder
@@ -254,9 +254,12 @@ npx tsx src/index.ts scenario   # run the scenarios
   | `orientation-requested` | enum | `3` portrait, `4` landscape, `5` reverse-landscape, `6` reverse-portrait | `3` (portrait) |
   | `media` | keyword | `iso_a4_210x297mm`, `na_letter_8.5x11in` | `iso_a4_210x297mm` |
   | `page-ranges` | 1setOf rangeOfInteger | any 1-based inclusive `lower-upper` ranges (e.g. `2-3`) | all pages |
+  | `number-up` | integer | `1`, `2`, `4`, `6`, `9`, `16` (any positive integer is honored) | `1` (one page per sheet) |
 
   `page-ranges` is advertised via the boolean `page-ranges-supported` = `true`
-  (rather than a `*-supported`/`*-default` pair) per RFC 8011 §5.2.7.
+  (rather than a `*-supported`/`*-default` pair) per RFC 8011 §5.2.7. `number-up`
+  is advertised via `number-up-supported` (1setOf integer) + `number-up-default`
+  = `1`.
 
   Omitted attributes are **not** echoed on the job (the printer's `*-default`
   advertises the effective value), keeping the default job-attribute set
@@ -294,6 +297,26 @@ npx tsx src/index.ts scenario   # run the scenarios
   `page-ranges` renders every page. Like `print-color-mode`/`orientation`, the
   Ghostscript-backed PDF/PostScript path is **not** range-filtered (gs page
   selection isn't threaded through), so `page-ranges` affects only PWG/URF jobs.
+
+  **`number-up` actually tiles N pages per sheet.** When a job sets `number-up`
+  to N > 1, the in-process PWG/URF render path groups the surviving (post
+  `page-ranges`, post `orientation` rotation) pages into batches of N and
+  composites each batch into **one** output sheet PNG laid out in a grid:
+  **`cols = ceil(sqrt(N))`, `rows = ceil(N/cols)`**, filled row-major
+  (left→right, top→bottom) — so `2`→1×2, `4`→2×2, `6`→2×3, `9`→3×3, `16`→4×4.
+  Each **cell** is the size of the **first page in the batch** (`cellW×cellH`),
+  the sheet is `cellW*cols × cellH*rows`, and every source page in the batch is
+  **scaled (nearest-neighbor) to fit its cell** (uniform pages tile 1:1;
+  differing pages are each rescaled). If a batch mixes color and grayscale pages
+  the whole sheet is promoted to RGB; an all-grayscale batch stays grayscale. A
+  short final batch (fewer than N pages) leaves its trailing cells **white**.
+  The emitted PNG's `-p<n>` suffix is the **1-based sheet index** (`…-p1.png`,
+  `…-p2.png`, …) — sheet numbering, **not** source-page numbering — so a 4-page
+  job at `number-up=2` writes just two sheets. `number-up` ≤ 1 (or absent) keeps
+  the one-PNG-per-page behavior (suffix = source-page index). Like the other
+  render-affecting attributes, the Ghostscript-backed PDF/PostScript path is
+  **not** N-up'd (gs `number-up` isn't threaded through), so `number-up` affects
+  only PWG/URF jobs.
 - `Pause-Printer` (0x0010) — pauses the printer: drives `printer-state` to
   `stopped` (5) with `printer-state-reasons` = `paused`, and **defers job
   execution**. While paused, the job-running paths (Print-Job after enqueue;

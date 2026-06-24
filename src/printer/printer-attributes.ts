@@ -23,6 +23,8 @@ import {
   ORIENTATION_REQUESTED_DEFAULT,
   Media,
   MEDIA_DEFAULT,
+  NUMBER_UP_SUPPORTED,
+  NUMBER_UP_DEFAULT,
   type PrinterStateValue,
   IPP_VERSION_MAJOR,
   IPP_VERSION_MINOR,
@@ -31,6 +33,8 @@ import {
   type IppAttribute,
   enumAttr,
   enumsAttr,
+  integerAttr,
+  integersAttr,
   booleanAttr,
   keywordAttr,
   uriAttr,
@@ -260,6 +264,12 @@ export function buildPrinterAttributes(
     // honors `page-ranges` and renders only the selected 1-based page ranges of
     // a multi-page raster job (see raster-render.ts / README).
     booleanAttr('page-ranges-supported', true),
+    // number-up (RFC 8011 §5.2.15): the grid sizes this emulator advertises
+    // (1setOf integer) and the default applied when a client omits it (1 — one
+    // source page per sheet). number-up tiles N consecutive source pages onto
+    // one output sheet (see raster-render.ts / README).
+    integersAttr('number-up-supported', ...NUMBER_UP_SUPPORTED),
+    integerAttr('number-up-default', NUMBER_UP_DEFAULT),
     keywordAttr('urf-supported', ...URF_SUPPORTED.split(',')),
     // job-hold-until (RFC 8011 §5.2.2): the keyword values this emulator accepts
     // and the default applied when a client omits it (`no-hold` — run normally).
