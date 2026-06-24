@@ -3,8 +3,9 @@
  *
  * Bridges the decode layer (`raster-decode.ts`) and the PNG encoder
  * (`utils/png.ts`) to the print path: given a finished raster job, decode each
- * page to grayscale and write one PNG per page to a caller-supplied path
- * prefix. This is the emulator "actually printing" — a submitted raster job
+ * page and write one PNG per page to a caller-supplied path prefix. Color (RGB)
+ * pages go through the truecolor encoder; grayscale pages through the grayscale
+ * encoder. This is the emulator "actually printing" — a submitted raster job
  * lands as visible images on disk.
  *
  * Opt-in only: the print handlers invoke this just when a render target is
@@ -15,7 +16,7 @@
 
 import { writeFileSync } from 'fs';
 import { decodeRasterPages } from './raster-decode.js';
-import { encodeGrayPng } from '../utils/png.js';
+import { encodeGrayPng, encodeRgbPng } from '../utils/png.js';
 import type { Document } from './document.js';
 import type { Logger } from '../logging/logger.js';
 
@@ -50,7 +51,9 @@ export function renderRasterJob(
       pageNum++;
       const path = `${prefix}-job${jobId}-p${pageNum}.png`;
       try {
-        const png = encodeGrayPng(page.widthPx, page.heightPx, page.gray);
+        const png = page.isColor
+          ? encodeRgbPng(page.widthPx, page.heightPx, page.rgb)
+          : encodeGrayPng(page.widthPx, page.heightPx, page.gray);
         writeFileSync(path, png);
         written.push({
           page: pageNum,
@@ -63,6 +66,7 @@ export function renderRasterJob(
           width: page.widthPx,
           height: page.heightPx,
           dpi: page.dpi,
+          color: page.isColor,
         });
       } catch (err) {
         logger?.warn('Failed to write raster PNG', {
