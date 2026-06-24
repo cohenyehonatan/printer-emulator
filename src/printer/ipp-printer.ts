@@ -300,13 +300,18 @@ export class IppPrinter extends EventEmitter {
    * are rasterized via Ghostscript (`gs`). Other formats (and hosts without
    * `gs`) produce nothing. Never throws. When PDF/PS rendering reveals the page
    * count, the job's reported impressions are reconciled best-effort.
+   *
+   * The job's `print-color-mode=monochrome` forces the in-process PWG/URF path
+   * to emit grayscale PNGs even for color pages. (The Ghostscript PDF/PS path is
+   * left in color regardless — gs colour control isn't threaded here; see README.)
    */
   private renderRaster(job: Job): void {
     const prefix = this.config.rasterOut;
     if (!prefix) return;
 
-    // In-process PWG/URF raster decode (unchanged path).
-    renderRasterJob(job.documents, job.id, prefix, this.logger);
+    // In-process PWG/URF raster decode. monochrome → force grayscale output.
+    const forceGrayscale = job.printColorMode === 'monochrome';
+    renderRasterJob(job.documents, job.id, prefix, this.logger, forceGrayscale);
 
     // Ghostscript-backed PDF/PostScript rasterization. gs numbers pages
     // globally across the `-o …-p%d.png` template per invocation, so each

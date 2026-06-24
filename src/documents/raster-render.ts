@@ -8,6 +8,12 @@
  * encoder. This is the emulator "actually printing" — a submitted raster job
  * lands as visible images on disk.
  *
+ * `print-color-mode=monochrome` (PWG 5100.13) actually changes the output: when
+ * `forceGrayscale` is set, a decoded *color* page is converted to grayscale
+ * (Rec. 601 luma) and written through the grayscale encoder, so a color source
+ * prints monochrome. `color`/`auto` leave the source untouched (color → color,
+ * gray → gray). See rgbToLuma().
+ *
  * Opt-in only: the print handlers invoke this just when a render target is
  * configured (RASTER_OUT env / --raster-out flag), so default runs, tests, and
  * CI write nothing. Writing never throws — a failed write is logged and the job
@@ -33,12 +39,18 @@ export interface RenderedPage {
  * `<prefix>-job<jobId>-p<n>.png`. Returns the pages written (empty when the
  * document isn't PWG/URF or nothing decoded). Never throws; per-file write
  * failures are logged and skipped.
+ *
+ * `forceGrayscale` honors `print-color-mode=monochrome`: a decoded color page is
+ * converted to grayscale (luma) and written through the grayscale encoder, so a
+ * color source prints monochrome. When false (color/auto), the page's own color
+ * is preserved.
  */
 export function renderRasterJob(
   documents: readonly Document[],
   jobId: number,
   prefix: string,
-  logger?: Logger
+  logger?: Logger,
+  forceGrayscale = false
 ): RenderedPage[] {
   const written: RenderedPage[] = [];
   let pageNum = 0;
@@ -50,10 +62,19 @@ export function renderRasterJob(
     for (const page of pages) {
       pageNum++;
       const path = `${prefix}-job${jobId}-p${pageNum}.png`;
+      // monochrome mode: a color page is reduced to luma and emitted grayscale.
+      const emitGray = !page.isColor || forceGrayscale;
       try {
-        const png = page.isColor
-          ? encodeRgbPng(page.widthPx, page.heightPx, page.rgb)
-          : encodeGrayPng(page.widthPx, page.heightPx, page.gray);
+        const png =
+          emitGray && page.isColor
+            ? encodeGrayPng(
+                page.widthPx,
+                page.heightPx,
+                rgbToLuma(page.rgb, page.widthPx * page.heightPx)
+              )
+            : page.isColor
+              ? encodeRgbPng(page.widthPx, page.heightPx, page.rgb)
+              : encodeGrayPng(page.widthPx, page.heightPx, page.gray);
         writeFileSync(path, png);
         written.push({
           page: pageNum,
@@ -66,7 +87,7 @@ export function renderRasterJob(
           width: page.widthPx,
           height: page.heightPx,
           dpi: page.dpi,
-          color: page.isColor,
+          color: page.isColor && !forceGrayscale,
         });
       } catch (err) {
         logger?.warn('Failed to write raster PNG', {
@@ -78,4 +99,21 @@ export function renderRasterJob(
   }
 
   return written;
+}
+
+/**
+ * Convert an RGB pixel buffer (3 bytes/pixel) to an 8-bit grayscale buffer of
+ * `pixels` samples using the Rec. 601 luma weights (0.299 R, 0.587 G, 0.114 B).
+ * Missing trailing channels are treated as 0. Used to force a color page to
+ * grayscale for `print-color-mode=monochrome`.
+ */
+export function rgbToLuma(rgb: Uint8Array, pixels: number): Uint8Array {
+  const gray = new Uint8Array(pixels);
+  for (let i = 0; i < pixels; i++) {
+    const r = rgb[i * 3] ?? 0;
+    const g = rgb[i * 3 + 1] ?? 0;
+    const b = rgb[i * 3 + 2] ?? 0;
+    gray[i] = Math.round(0.299 * r + 0.587 * g + 0.114 * b) & 0xff;
+  }
+  return gray;
 }
