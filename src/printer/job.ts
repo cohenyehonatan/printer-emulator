@@ -33,6 +33,7 @@ import {
   normalizeOrientation,
   normalizeMedia,
   type JobTemplate,
+  type PageRange,
 } from '../ipp/job-template.js';
 import { holdUntilHolds } from '../ipp/hold-until.js';
 import type { Document } from '../documents/document.js';
@@ -90,10 +91,10 @@ export interface JobInit {
   /**
    * The common print Job Template attributes the client supplied on
    * Print-Job/Create-Job (`print-color-mode`, `print-quality`, `sides`,
-   * `orientation-requested`, `media`). Already normalized to the advertised
-   * value set (unknown/invalid values arrive as undefined). Stored verbatim so
-   * Get-Job-Attributes can echo them and the render path can honor
-   * `print-color-mode`. See ipp/job-template.ts.
+   * `orientation-requested`, `media`, `page-ranges`). Already normalized to the
+   * advertised value set (unknown/invalid values arrive as undefined). Stored
+   * verbatim so Get-Job-Attributes can echo them and the render path can honor
+   * `print-color-mode` / `page-ranges`. See ipp/job-template.ts.
    */
   template?: JobTemplate;
 }
@@ -138,6 +139,14 @@ export class Job {
   private _orientation: OrientationRequestedValue | undefined;
   private _media: MediaValue | undefined;
   /**
+   * The requested `page-ranges` (RFC 8011 §5.2.7) — a normalized list of 1-based
+   * inclusive `{lower, upper}` ranges, or undefined when the client supplied
+   * none (render every page). Drives the render path: only PWG/URF pages whose
+   * 1-based index falls in some range are emitted (see raster-render.ts).
+   * Echoed by Get-Job-Attributes / Get-Jobs as a 1setOf rangeOfInteger once set.
+   */
+  private _pageRanges: PageRange[] | undefined;
+  /**
    * Number of times this job has run to `completed`. Starts at 0 and increments
    * each time process() reaches COMPLETE. A Restart-Job (§4.3.7) re-queues a
    * terminal job and runs it again, so a second completion bumps this to 2 —
@@ -160,6 +169,7 @@ export class Job {
     this._sides = init.template?.sides;
     this._orientation = init.template?.orientation;
     this._media = init.template?.media;
+    this._pageRanges = init.template?.pageRanges;
 
     if (init.document) {
       this._documents.push(init.document);
@@ -334,6 +344,15 @@ export class Job {
   setMedia(value: string | undefined): void {
     const normalized = normalizeMedia(value);
     if (normalized !== undefined) this._media = normalized;
+  }
+
+  /**
+   * The job's requested `page-ranges` (1-based inclusive `{lower, upper}` list),
+   * or undefined when the client never set one (render every page). Echoed once
+   * set; consumed by the render path to filter which raster pages are emitted.
+   */
+  get pageRanges(): PageRange[] | undefined {
+    return this._pageRanges;
   }
 
   /**

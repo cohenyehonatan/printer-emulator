@@ -4,7 +4,8 @@
  * Beyond `copies`/`job-hold-until`, real IPP clients (CUPS, AirPrint, ipptool)
  * routinely send a handful of Job Template attributes that select how a job is
  * rendered: `print-color-mode`, `print-quality`, `sides`,
- * `orientation-requested`, and `media` (RFC 8011 §5.2 / PWG 5100.13). This
+ * `orientation-requested`, `media`, and `page-ranges` (RFC 8011 §5.2 / PWG
+ * 5100.13). This
  * module reads them from the job-attributes group of Print-Job/Create-Job (and
  * the same group Set-Job-Attributes carries), validates each against the value
  * set this emulator advertises, and clamps/ignores anything unknown to the
@@ -27,7 +28,14 @@ import {
   type OrientationRequestedValue,
   type MediaValue,
 } from './constants.js';
-import { firstString, firstNumber, findAttr, type IppAttribute } from './attribute.js';
+import {
+  firstString,
+  firstNumber,
+  findAttr,
+  allRanges,
+  type IppAttribute,
+  type IppRange,
+} from './attribute.js';
 
 /** The advertised `print-color-mode` keyword set (color/monochrome/auto). */
 const COLOR_MODES = new Set<string>(Object.values(PrintColorMode));
@@ -89,6 +97,34 @@ export function normalizeMedia(
     : undefined;
 }
 
+/** A normalized 1-based, inclusive page range (`page-ranges` member). */
+export interface PageRange {
+  lower: number;
+  upper: number;
+}
+
+/**
+ * Normalize the `page-ranges` job-template attribute (1setOf rangeOfInteger,
+ * RFC 8011 §5.2.7). Each decoded `[lower, upper]` tuple is coerced to a 1-based
+ * inclusive `{lower, upper}`: bounds are truncated to integers, a lower < 1 is
+ * floored to 1, and a range with a non-positive/inverted upper (or unparseable
+ * bounds) is dropped. Returns undefined when the attribute is absent or no
+ * valid range survives — meaning "render every page". Never throws.
+ */
+export function normalizePageRanges(
+  ranges: IppRange[]
+): PageRange[] | undefined {
+  const out: PageRange[] = [];
+  for (const [rawLower, rawUpper] of ranges) {
+    if (!Number.isFinite(rawLower) || !Number.isFinite(rawUpper)) continue;
+    const lower = Math.max(1, Math.trunc(rawLower));
+    const upper = Math.trunc(rawUpper);
+    if (upper < lower) continue; // inverted/empty range — ignore it
+    out.push({ lower, upper });
+  }
+  return out.length > 0 ? out : undefined;
+}
+
 /** A parsed set of print Job Template attributes (undefined = client omitted). */
 export interface JobTemplate {
   printColorMode?: PrintColorModeValue;
@@ -96,6 +132,7 @@ export interface JobTemplate {
   sides?: SidesValue;
   orientation?: OrientationRequestedValue;
   media?: MediaValue;
+  pageRanges?: PageRange[];
 }
 
 /**
@@ -116,5 +153,6 @@ export function readJobTemplate(jobAttrs: IppAttribute[]): JobTemplate {
       firstNumber(findAttr(jobAttrs, 'orientation-requested'))
     ),
     media: normalizeMedia(firstString(findAttr(jobAttrs, 'media'))),
+    pageRanges: normalizePageRanges(allRanges(findAttr(jobAttrs, 'page-ranges'))),
   };
 }
