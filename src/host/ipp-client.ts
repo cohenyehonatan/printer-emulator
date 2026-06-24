@@ -182,6 +182,28 @@ export class IppClient {
     return this.send(request);
   }
 
+  /**
+   * Hold-Job: place a pending job into pending-held so it will not print until
+   * a matching releaseJob(). A job already held is left held.
+   */
+  async holdJob(jobId: number): Promise<IppResponse> {
+    const request = this.baseRequest(OperationIds.HOLD_JOB, [
+      integerAttr('job-id', jobId),
+    ]);
+    return this.send(request);
+  }
+
+  /**
+   * Release-Job: release a pending-held job back to pending and run the
+   * emulated print. Releasing a job that is not held is a successful no-op.
+   */
+  async releaseJob(jobId: number): Promise<IppResponse> {
+    const request = this.baseRequest(OperationIds.RELEASE_JOB, [
+      integerAttr('job-id', jobId),
+    ]);
+    return this.send(request);
+  }
+
   // ── Internal ────────────────────────────────────────────────────────
 
   /** Build a request with the mandatory operation attributes. */
