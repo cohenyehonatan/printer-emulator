@@ -1,69 +1,140 @@
 /**
- * AirPrint / Bonjour service advertiser — STUB.
+ * AirPrint / Bonjour service advertiser — real mDNS/DNS-SD via bonjour-service.
  *
- * AirPrint discovers printers via mDNS/DNS-SD: a printer advertises an
- * `_ipp._tcp` (and `_universal._sub._ipp._tcp` for AirPrint) service with a
- * TXT record describing its capabilities (rp=ipp/print, pdl=..., URF=...).
- * Implementing real multicast DNS needs a socket-level mDNS responder, which
- * is intentionally out of scope here to avoid a third-party dependency.
+ * AirPrint discovers printers over multicast DNS: a printer advertises an
+ * `_ipp._tcp` service (plus the `_universal._sub._ipp._tcp` subtype AirPrint
+ * clients filter on) carrying a TXT record that describes its capabilities
+ * (rp=ipp/print, pdl=..., URF=...). This module builds that service config from
+ * the printer's own attributes and publishes it on the network.
  *
- * This stub records the advertisement parameters and logs them; it never binds
- * a socket and never throws.
+ * The TXT/service construction is factored into the pure `buildAirPrintService`
+ * function so it can be unit-tested without opening a socket. `MdnsAdvertiser`
+ * owns the bonjour instance and is the only thing that touches the network;
+ * stop() unpublishes and destroys the instance so the process can exit cleanly.
  */
 
+import { Bonjour, type Service, type ServiceConfig } from 'bonjour-service';
 import { Logger } from '../logging/logger.js';
+import {
+  type PrinterIdentity,
+  SUPPORTED_FORMATS,
+  URF_SUPPORTED,
+} from '../printer/printer-attributes.js';
 
-export interface MdnsServiceInfo {
-  serviceType: string; // e.g. _ipp._tcp
-  instanceName: string;
+/** AirPrint subtype AirPrint clients filter `_ipp._tcp` discovery on. */
+export const UNIVERSAL_SUBTYPE = 'universal';
+
+/** Inputs for building the AirPrint mDNS service config. */
+export interface AirPrintServiceParams {
+  identity: PrinterIdentity;
   port: number;
-  txt: Record<string, string>;
+  /** Hostname clients reach the printer's HTTP/IPP endpoint at. */
+  host?: string;
+}
+
+/**
+ * Derive the IPP resource path (the mDNS `rp` TXT key) from the printer URI's
+ * path, stripping the leading slash so it matches the HTTP server's IPP route
+ * (e.g. `ipp://host:port/ipp/print` -> `ipp/print`). Falls back to `ipp/print`.
+ */
+export function resourcePathFromUri(uri: string): string {
+  try {
+    const path = new URL(uri).pathname.replace(/^\/+/, '');
+    return path.length > 0 ? path : 'ipp/print';
+  } catch {
+    return 'ipp/print';
+  }
+}
+
+/**
+ * Build the bonjour ServiceConfig for an AirPrint `_ipp._tcp` advertisement.
+ *
+ * Pure + side-effect-free: constructs the TXT record from the printer's own
+ * attributes (rp, ty, note, product, pdl, URF, adminurl, UUID, ...) so the
+ * advertised capabilities stay consistent with Get-Printer-Attributes. Tests
+ * exercise this without publishing on the network.
+ */
+export function buildAirPrintService(
+  params: AirPrintServiceParams
+): ServiceConfig {
+  const { identity, port } = params;
+  const host = params.host ?? 'localhost';
+  const rp = resourcePathFromUri(identity.uri);
+
+  const txt: Record<string, string> = {
+    txtvers: '1',
+    qtotal: '1',
+    rp,
+    ty: identity.makeAndModel,
+    note: identity.location,
+    product: `(${identity.makeAndModel})`,
+    pdl: SUPPORTED_FORMATS.join(','),
+    URF: URF_SUPPORTED,
+    adminurl: `http://${host}:${port}/`,
+    UUID: identity.uuid,
+    TLS: '1.2',
+    Color: 'T',
+    Duplex: 'T',
+    Scan: 'F',
+    priority: '50',
+  };
+
+  return {
+    name: identity.name,
+    type: 'ipp',
+    protocol: 'tcp',
+    port,
+    host: `${host}.`,
+    subtypes: [UNIVERSAL_SUBTYPE],
+    txt,
+  };
 }
 
 export class MdnsAdvertiser {
   private readonly logger = new Logger('MDNS', 'info');
-  private advertising = false;
+  private bonjour: Bonjour | null = null;
+  private service: Service | null = null;
+  private readonly config: ServiceConfig;
 
-  constructor(private readonly info: MdnsServiceInfo) {}
+  constructor(params: AirPrintServiceParams) {
+    this.config = buildAirPrintService(params);
+  }
 
-  /** Pretend to start advertising the service. */
+  /** Publish the AirPrint `_ipp._tcp` service on the network. */
   start(): void {
-    // TODO: bind UDP 5353 and respond to _ipp._tcp PTR/SRV/TXT queries.
-    this.advertising = true;
-    this.logger.info('mDNS advertise (stub)', {
-      service: this.info.serviceType,
-      instance: this.info.instanceName,
-      port: this.info.port,
+    if (this.bonjour) return;
+    this.bonjour = new Bonjour();
+    this.service = this.bonjour.publish(this.config);
+    this.logger.info('mDNS advertising AirPrint service', {
+      service: '_ipp._tcp',
+      subtype: `_${UNIVERSAL_SUBTYPE}._sub._ipp._tcp`,
+      instance: this.config.name,
+      port: this.config.port,
+      rp: this.config.txt?.rp,
     });
   }
 
-  /** Stop advertising. */
-  stop(): void {
-    // TODO: send goodbye packets and close the socket.
-    this.advertising = false;
+  /**
+   * Unpublish the service and destroy the bonjour instance. Closes the
+   * underlying multicast socket so a host process can exit cleanly.
+   */
+  async stop(): Promise<void> {
+    if (!this.bonjour) return;
+    const bonjour = this.bonjour;
+    await new Promise<void>((resolve) => {
+      bonjour.unpublishAll(() => bonjour.destroy(() => resolve()));
+    });
+    this.bonjour = null;
+    this.service = null;
+    this.logger.info('mDNS advertising stopped');
   }
 
   isAdvertising(): boolean {
-    return this.advertising;
+    return this.bonjour !== null;
   }
-}
 
-/** Build a default AirPrint-style advertisement for a printer. */
-export function buildAirPrintService(
-  instanceName: string,
-  port: number
-): MdnsServiceInfo {
-  return {
-    serviceType: '_ipp._tcp',
-    instanceName,
-    port,
-    txt: {
-      rp: 'ipp/print',
-      ty: instanceName,
-      pdl: 'application/pdf,image/urf,image/pwg-raster',
-      URF: 'V1.4,CP1,PQ4',
-      txtvers: '1',
-      qtotal: '1',
-    },
-  };
+  /** The resolved service config (for inspection/tests). */
+  getConfig(): ServiceConfig {
+    return this.config;
+  }
 }
