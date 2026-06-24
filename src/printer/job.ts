@@ -133,6 +133,17 @@ export class Job {
   }
 
   /**
+   * Override the job's total impressions (best-effort). Used after a renderer
+   * (e.g. Ghostscript for PDF/PostScript) discovers the true page count, which
+   * isn't known until the document is actually rasterized. Ignored for
+   * non-positive counts so a failed/empty render never lowers the reported
+   * impressions below the 1-page floor.
+   */
+  setImpressions(impressions: number): void {
+    if (impressions > 0) this._impressions = impressions;
+  }
+
+  /**
    * Close an open multi-document job (last-document / Close-Job). Releases the
    * held job and runs the emulated print when at least one document was sent;
    * aborts an empty job that was closed with no documents. Idempotent once
