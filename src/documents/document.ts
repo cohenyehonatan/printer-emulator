@@ -3,8 +3,12 @@
  *
  * A Document is the unit of printable data carried by a Print-Job operation:
  * the raw bytes plus the negotiated/detected MIME type and a friendly name.
- * Real rendering is out of scope (this is an emulator) — the DocumentHandler
- * interface is the seam where a rasterizer/renderer would plug in.
+ * The DocumentHandler interface is the seam for format-specific processing;
+ * actual rasterization to per-page PNGs happens on the print path (opt-in via
+ * RASTER_OUT): PWG/URF raster is decoded in-process (`raster-render.ts`), and
+ * PDF/PostScript is rendered through the system Ghostscript binary
+ * (`gs-raster.ts`), the same approach CUPS uses in its filter chain. Formats
+ * with no rasterizer stay passthrough (byte-size reporting only).
  */
 
 import { parseRasterInfo, type RasterDocumentInfo } from './raster-info.js';
@@ -28,12 +32,16 @@ export interface DocumentHandler {
   describe(doc: Document): string;
 }
 
-/** Default handler: reports byte size only, never throws. */
+/**
+ * Default handler for formats with no rasterizer (raw / octet-stream, JPEG,
+ * PCL, …): reports byte size only. Rasterizable formats are handled off this
+ * seam on the print path — PWG/URF in `raster-render.ts`, PDF/PostScript via
+ * Ghostscript in `gs-raster.ts`. Never throws.
+ */
 export class PassthroughHandler implements DocumentHandler {
   constructor(public readonly format: string = '*/*') {}
 
   describe(doc: Document): string {
-    // TODO: real rendering/rasterization would happen here.
     return `${doc.format} (${doc.bytes.length} bytes)`;
   }
 }

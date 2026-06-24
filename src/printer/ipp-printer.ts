@@ -31,15 +31,20 @@ import {
 import type { IppResponse } from '../ipp/message.js';
 import type { Job } from './job.js';
 import { renderRasterJob } from '../documents/raster-render.js';
+import { rasterizePdfOrPostScript } from '../documents/gs-raster.js';
+import { Mime } from '../documents/formats.js';
 
 export interface IppPrinterConfig {
   port: number;
   identity?: Partial<PrinterIdentity>;
   logLevel?: 'debug' | 'info' | 'warn' | 'error';
   /**
-   * Opt-in raster output: a filesystem path prefix. When set, completed
-   * PWG/URF jobs are decoded and one PNG is written per page as
-   * `<prefix>-job<id>-p<n>.png`. Off by default (no rendering side effects).
+   * Opt-in raster output: a filesystem path prefix. When set, completed jobs
+   * are rendered and one PNG is written per page as `<prefix>-job<id>-p<n>.png`.
+   * PWG/URF jobs are decoded in-process; PDF/PostScript jobs are rasterized via
+   * the system Ghostscript (`gs`) binary, the same approach CUPS uses. Off by
+   * default (no rendering side effects). Formats with no rasterizer (and hosts
+   * without `gs`) write nothing.
    */
   rasterOut?: string;
   /**
@@ -182,13 +187,45 @@ export class IppPrinter extends EventEmitter {
   }
 
   /**
-   * Render a finished job's PWG/URF pages to PNGs under the configured
-   * `rasterOut` prefix. Non-raster jobs produce nothing. Never throws.
+   * Render a finished job's pages to PNGs under the configured `rasterOut`
+   * prefix. PWG/URF documents are decoded in-process; PDF/PostScript documents
+   * are rasterized via Ghostscript (`gs`). Other formats (and hosts without
+   * `gs`) produce nothing. Never throws. When PDF/PS rendering reveals the page
+   * count, the job's reported impressions are reconciled best-effort.
    */
   private renderRaster(job: Job): void {
     const prefix = this.config.rasterOut;
     if (!prefix) return;
+
+    // In-process PWG/URF raster decode (unchanged path).
     renderRasterJob(job.documents, job.id, prefix, this.logger);
+
+    // Ghostscript-backed PDF/PostScript rasterization. gs numbers pages
+    // globally across the `-o …-p%d.png` template per invocation, so each
+    // PDF/PS document is rendered on its own to keep page files from
+    // overwriting one another across documents.
+    let gsPages = 0;
+    for (const doc of job.documents) {
+      if (doc.format !== Mime.PDF && doc.format !== Mime.POSTSCRIPT) continue;
+      // Offset the page numbering so multiple PDF/PS docs in one job don't
+      // collide on `-p<n>.png`; the prefix carries the running page base.
+      const docPrefix = gsPages > 0 ? `${prefix}-d${gsPages}` : prefix;
+      const written = rasterizePdfOrPostScript(doc.bytes, {
+        outPrefix: docPrefix,
+        jobId: job.id,
+        logger: this.logger,
+      });
+      gsPages += written.length;
+    }
+
+    if (gsPages > 0) {
+      this.logger.info('Rasterized PDF/PostScript job via Ghostscript', {
+        jobId: job.id,
+        pages: gsPages,
+      });
+      // Best-effort: reflect the real gs page count in job-impressions.
+      job.setImpressions(gsPages);
+    }
   }
 
   /**

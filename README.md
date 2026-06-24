@@ -197,6 +197,27 @@ npx tsx src/index.ts scenario   # run the scenarios
   npx tsx src/index.ts emulator --raster-out /tmp/out
   # a submitted raster job lands as /tmp/out-job<id>-p1.png, ...
   ```
+- **PDF / PostScript rasterization** — `documents/gs-raster.ts` rasterizes PDF
+  and PostScript print jobs to one PNG per page by shelling out to the system
+  **Ghostscript** (`gs`) binary, the same approach CUPS uses in its filter chain
+  (`gstoraster`/`pdftoraster`). The job bytes are written to a temp file and `gs`
+  is invoked (array argv, no shell) with `-dSAFER -dBATCH -dNOPAUSE
+  -sDEVICE=png16m -r150 -o "<prefix>-job<id>-p%d.png" <tempfile>` — 24-bit color
+  PNG at 150 dpi by default — and the produced `-p<n>.png` files are collected
+  (gs decides the page count). It reuses the **same opt-in** `RASTER_OUT` /
+  `--raster-out <prefix>` target and the same `<prefix>-job<id>-p<n>.png` naming
+  as the PWG/URF path; `job-impressions` is reconciled best-effort to the gs page
+  count. **Requires `gs` on PATH at runtime** (already present on most
+  CUPS/macOS hosts). It is **off by default** and degrades gracefully: when `gs`
+  is missing or errors, it logs a warning and writes nothing — it never throws,
+  so runs/tests/CI without Ghostscript stay green. The temp file is always
+  cleaned up; `-dSAFER` sandboxes the interpreter against the untrusted job
+  bytes (never `-dNOSAFER`).
+
+  ```bash
+  # with gs on PATH, a submitted PDF/PS job lands as /tmp/out-job<id>-p1.png, ...
+  RASTER_OUT=/tmp/out npm run start:emulator
+  ```
 - `Validate-Job` — returns `successful-ok`.
 - **mDNS / AirPrint advertising** (`transport/mdns.ts`) — real `_ipp._tcp`
   multicast advertisement via the `bonjour-service` runtime dependency, plus the
@@ -212,10 +233,12 @@ npx tsx src/index.ts scenario   # run the scenarios
 - IPP-over-HTTP server + client transport on port 631 (override via `PORT`).
 
 **Stubbed / partial** (all return valid IPP responses; none throw)
-- Document rendering — **PWG-Raster and URF now render to PNG** (see above; opt-in
-  via `RASTER_OUT`/`--raster-out`). **PDF and PostScript remain passthrough**:
-  they are accepted and measured but not rasterized (there is no PDF/PS
-  rasterizer — `documents/document.ts` `PassthroughHandler`). PWG/URF pixel
+- Document rendering — **PWG-Raster, URF, PDF, and PostScript now render to PNG**
+  (see above; opt-in via `RASTER_OUT`/`--raster-out`). PDF/PostScript go through
+  the system Ghostscript binary (`gs-raster.ts`); when `gs` is absent they
+  degrade to a logged no-op. **Formats with no rasterizer stay passthrough** —
+  raw/octet-stream, JPEG, and PCL are accepted and measured but not rasterized
+  (`documents/document.ts` `PassthroughHandler`). PWG/URF pixel
   decode covers 1-bit (gray/black), 8-bit grayscale, 16-bit grayscale,
   sRGB24/device-RGB, and CMYK — all reduced to 8-bit grayscale luma (see above).
   Remaining TODO: full-fidelity color output (output stays 8-bit grayscale, so
