@@ -29,7 +29,8 @@ import {
   type IppResponse,
 } from '../message.js';
 import { DelimiterTags } from '../constants.js';
-import { detectFormat } from '../../documents/formats.js';
+import { detectFormat, Mime } from '../../documents/formats.js';
+import { parseRasterInfo } from '../../documents/raster-info.js';
 import type { Document } from '../../documents/document.js';
 import type { OperationContext } from '../dispatcher.js';
 
@@ -55,6 +56,15 @@ export function handlePrintJob(
     bytes,
   };
 
+  // For PWG-Raster / URF, parse the page headers so job-impressions reflects
+  // the real page count. Other formats are not counted (impressions defaults
+  // to 1). parseRasterInfo never throws.
+  let impressions: number | undefined;
+  if (format === Mime.PWG_RASTER || format === Mime.URF) {
+    const pages = parseRasterInfo(bytes)?.pages.length;
+    if (pages && pages > 0) impressions = pages;
+  }
+
   const job = ctx.queue.enqueue({
     printerUri: ctx.identity.uri,
     document,
@@ -62,6 +72,7 @@ export function handlePrintJob(
     requestingUserName: firstString(
       findAttr(opAttrs, 'requesting-user-name')
     ),
+    impressions,
   });
 
   // Emulated print: immediately drive the job to completion.
@@ -86,6 +97,8 @@ export function handlePrintJob(
         uriAttr('job-uri', jobUri),
         integerAttr('job-id', job.id),
         enumAttr('job-state', job.stateValue),
+        integerAttr('job-impressions', job.impressions),
+        integerAttr('job-impressions-completed', job.impressions),
       ]),
     ],
   };

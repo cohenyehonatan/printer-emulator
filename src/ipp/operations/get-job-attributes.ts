@@ -92,7 +92,8 @@ function buildJobAttributes(job: Job, ctx: OperationContext): IppAttribute[] {
     nameWithoutLangAttr('job-originating-user-name', job.requestingUserName),
     integerAttr('time-at-creation', createdSecs),
     integerAttr('time-at-completed', completed ? createdSecs : 0),
-    integerAttr('job-impressions-completed', completed ? 1 : 0),
+    integerAttr('job-impressions', job.impressions),
+    integerAttr('job-impressions-completed', completed ? job.impressions : 0),
   ];
 }
 
