@@ -145,9 +145,15 @@ npx tsx src/index.ts scenario   # run the scenarios
 - **PWG-Raster / Apple-URF pixel rendering** — `documents/raster-decode.ts`
   decodes each page's PackBits line stream (line-repeat byte + literal/repeat
   control runs) into real pixels, sized from the page header's
-  cupsWidth/Height/BytesPerLine/bitsPerPixel/colorSpace. 8-bit grayscale (`sGray`
-  / device-gray) passes through; sRGB24 / device-RGB is down-converted to Rec.601
-  luma. `utils/png.ts` then writes an 8-bit-grayscale PNG (signature + IHDR +
+  cupsWidth/Height/BytesPerLine/bitsPerPixel/bitsPerColor/colorSpace. All
+  color/bit-depth variants reduce to one 8-bit gray sample per pixel:
+  8-bit grayscale (`sGray`/device-gray) passes through; **1-bit** (sGray/gray/
+  black) unpacks 8 pixels per byte MSB-first, honoring cupsWidth so trailing
+  padding bits in the last byte of a row are ignored (additive sGray: 0=black,
+  1=white; subtractive black `K`: 1=black, 0=white); **16-bit** grayscale
+  downsamples to the big-endian high byte; sRGB24 / device-RGB is down-converted
+  to Rec.601 luma; **CMYK** converts `R=255*(1-C/255)*(1-K/255)` (and G,B) then
+  Rec.601 luma. `utils/png.ts` then writes an 8-bit-grayscale PNG (signature + IHDR +
   deflated IDAT scanlines + IEND, each chunk CRC-32'd) using only Node's built-in
   `zlib` — no image dependencies. Rendering is **opt-in**: set the `RASTER_OUT`
   env var or pass `--raster-out <prefix>` on the emulator/demo, and a completed
@@ -180,8 +186,13 @@ npx tsx src/index.ts scenario   # run the scenarios
   via `RASTER_OUT`/`--raster-out`). **PDF and PostScript remain passthrough**:
   they are accepted and measured but not rasterized (there is no PDF/PS
   rasterizer — `documents/document.ts` `PassthroughHandler`). PWG/URF pixel
-  decode covers 8-bit grayscale and sRGB24/device-RGB (→ luma); other bit depths
-  (e.g. 1-bit/black, 16-bit) and CMYK are read at byte granularity but not
-  separately color-managed — a remaining TODO.
+  decode covers 1-bit (gray/black), 8-bit grayscale, 16-bit grayscale,
+  sRGB24/device-RGB, and CMYK — all reduced to 8-bit grayscale luma (see above).
+  Remaining TODO: full-fidelity color output (output stays 8-bit grayscale, so
+  RGB/CMYK collapse to luma), 16-bit *color* channels (only 16-bit gray is
+  handled), ICC/colorimetric profiles (no white-point/gamma management —
+  sRGB and AdobeRGB are treated identically), and exotic colorSpaces (CIE
+  Lab/XYZ, DeviceN/multi-ink separations) which fall back to the byte-width
+  heuristic rather than being color-managed.
 - Unknown operations — answered with `server-error-operation-not-supported`.
 ```
