@@ -21,6 +21,20 @@ import { JobHoldUntil, type JobStateValue } from '../ipp/constants.js';
 import { holdUntilHolds } from '../ipp/hold-until.js';
 import type { Document } from '../documents/document.js';
 
+/**
+ * The settable job-description / job-template attributes this emulator honors
+ * via Set-Job-Attributes (RFC 3380 §4.2), advertised in
+ * `job-settable-attributes-supported`. Each maps onto a Job field that
+ * Get-Job-Attributes / Get-Jobs reflect. Kept here so the writable set and its
+ * advertisement stay in one place.
+ */
+export const JOB_SETTABLE_ATTRIBUTES = [
+  'job-name',
+  'job-priority',
+  'copies',
+  'job-hold-until',
+] as const;
+
 export interface JobInit {
   id: number;
   printerUri: string;
@@ -57,8 +71,16 @@ export interface JobInit {
 export class Job {
   readonly id: number;
   readonly printerUri: string;
-  readonly jobName: string;
+  private _jobName: string;
   readonly requestingUserName: string;
+  /**
+   * `job-priority` (RFC 8011 §5.2.4, 1–100; higher prints sooner) and `copies`
+   * (§5.2.5, ≥1). Settable via Set-Job-Attributes (RFC 3380 §4.2) and echoed by
+   * Get-Job-Attributes once a client sets one. `undefined` until set so the
+   * default job-attribute set stays unchanged for jobs that never carried them.
+   */
+  private _jobPriority: number | undefined;
+  private _copies: number | undefined;
   readonly createdAt: Date;
   private readonly _documents: Document[] = [];
   private _impressions: number;
@@ -83,7 +105,7 @@ export class Job {
   constructor(init: JobInit) {
     this.id = init.id;
     this.printerUri = init.printerUri;
-    this.jobName = init.jobName ?? `job-${init.id}`;
+    this._jobName = init.jobName ?? `job-${init.id}`;
     this.requestingUserName = init.requestingUserName ?? 'anonymous';
     this.createdAt = new Date();
     this._open = init.open ?? false;
@@ -153,6 +175,67 @@ export class Job {
    */
   get holdUntil(): string | undefined {
     return this._holdUntil;
+  }
+
+  /** The job's display name (`job-name`); mutable via Set-Job-Attributes. */
+  get jobName(): string {
+    return this._jobName;
+  }
+
+  /**
+   * Set/replace the job's display name (`job-name`). Used by Set-Job-Attributes
+   * (RFC 3380 §4.2) on a non-terminal job. An empty/undefined value is ignored.
+   */
+  setJobName(value: string | undefined): void {
+    if (value !== undefined && value.length > 0) this._jobName = value;
+  }
+
+  /**
+   * The job's `job-priority` (RFC 8011 §5.2.4), or undefined when never set.
+   * Echoed by Get-Job-Attributes once a client sets it.
+   */
+  get jobPriority(): number | undefined {
+    return this._jobPriority;
+  }
+
+  /**
+   * Set the job's `job-priority` (1–100, higher prints sooner). Out-of-range or
+   * non-finite values are clamped into [1,100]; the emulator runs jobs to
+   * completion synchronously, so priority is recorded/echoed but does not
+   * reorder the (already-instant) queue.
+   */
+  setJobPriority(value: number | undefined): void {
+    if (value === undefined || !Number.isFinite(value)) return;
+    this._jobPriority = Math.min(100, Math.max(1, Math.trunc(value)));
+  }
+
+  /** The job's requested `copies` (RFC 8011 §5.2.5), or undefined when unset. */
+  get copies(): number | undefined {
+    return this._copies;
+  }
+
+  /**
+   * Set the job's `copies` (≥1). Non-positive/non-finite values are ignored so
+   * a malformed write never lowers copies below 1.
+   */
+  setCopies(value: number | undefined): void {
+    if (value === undefined || !Number.isFinite(value) || value < 1) return;
+    this._copies = Math.trunc(value);
+  }
+
+  /**
+   * Whether this job is in a non-terminal state (pending / pending-held /
+   * processing / processing-stopped) — i.e. a legal Set-Job-Attributes target
+   * (RFC 3380 §4.2). A terminal job (completed / canceled / aborted) is not
+   * settable and yields client-error-not-possible.
+   */
+  get isSettable(): boolean {
+    const state = this.sm.getState();
+    return (
+      state !== JobState.COMPLETED &&
+      state !== JobState.CANCELED &&
+      state !== JobState.ABORTED
+    );
   }
 
   /**

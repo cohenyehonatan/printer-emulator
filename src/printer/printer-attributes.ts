@@ -28,6 +28,7 @@ import {
   mimeMediaTypeAttr,
 } from '../ipp/attribute.js';
 import { ValueTags } from '../ipp/constants.js';
+import { JOB_SETTABLE_ATTRIBUTES } from './job.js';
 
 export interface PrinterIdentity {
   name: string;
@@ -37,7 +38,38 @@ export interface PrinterIdentity {
   uuid: string;
   /** Physical location string (printer-location / mDNS note TXT key). */
   location: string;
+  /**
+   * Free-form administrative description (`printer-info`, RFC 8011 §5.4.7). A
+   * settable attribute (Set-Printer-Attributes); optional so the default
+   * identity can omit it.
+   */
+  info?: string;
+  /**
+   * `printer-geo-location` (PWG 5100.13): a `geo:` URI giving the printer's
+   * geographic position. Settable; optional (absent in the default identity).
+   */
+  geoLocation?: string;
+  /**
+   * `printer-organization` (PWG 5100.13): the owning organization name.
+   * Settable; optional (absent in the default identity).
+   */
+  organization?: string;
 }
+
+/**
+ * The settable printer-description attributes this emulator honors via
+ * Set-Printer-Attributes (RFC 3380 §4.1), advertised in
+ * `printer-settable-attributes-supported`. Each maps onto a PrinterIdentity
+ * field that Get-Printer-Attributes reflects. Kept here so the writable set and
+ * its advertisement stay in one place.
+ */
+export const PRINTER_SETTABLE_ATTRIBUTES = [
+  'printer-name',
+  'printer-info',
+  'printer-location',
+  'printer-geo-location',
+  'printer-organization',
+] as const;
 
 export const DEFAULT_IDENTITY: PrinterIdentity = {
   name: 'Emulated IPP Everywhere Printer',
@@ -105,6 +137,18 @@ export function buildPrinterAttributes(
     nameWithoutLangAttr('printer-name', identity.name),
     textWithoutLangAttr('printer-make-and-model', identity.makeAndModel),
     textWithoutLangAttr('printer-location', identity.location),
+    // printer-info / printer-geo-location / printer-organization are settable
+    // (Set-Printer-Attributes, RFC 3380 §4.1) — emitted only once given a value
+    // so the default attribute set is unchanged until a client writes one.
+    ...(identity.info !== undefined
+      ? [textWithoutLangAttr('printer-info', identity.info)]
+      : []),
+    ...(identity.geoLocation !== undefined
+      ? [uriAttr('printer-geo-location', identity.geoLocation)]
+      : []),
+    ...(identity.organization !== undefined
+      ? [textWithoutLangAttr('printer-organization', identity.organization)]
+      : []),
     uriAttr('printer-uuid', `urn:uuid:${identity.uuid}`),
     enumAttr('printer-state', state),
     keywordAttr('printer-state-reasons', ...reasons),
@@ -136,8 +180,22 @@ export function buildPrinterAttributes(
         OperationIds.RESUME_PRINTER,
         OperationIds.CLOSE_JOB,
         OperationIds.IDENTIFY_PRINTER,
+        OperationIds.SET_PRINTER_ATTRIBUTES,
+        OperationIds.SET_JOB_ATTRIBUTES,
       ].map((op) => ({ tag: ValueTags.ENUM, value: op })),
     },
+    // Set-Printer-Attributes / Set-Job-Attributes (RFC 3380) writable sets: the
+    // printer- and job-description attributes a client may modify. NOTE: a real
+    // IPP host gates these writes behind operator/admin operation policy; this
+    // emulator has no auth layer, so it applies them unconditionally (see README).
+    keywordAttr(
+      'printer-settable-attributes-supported',
+      ...PRINTER_SETTABLE_ATTRIBUTES
+    ),
+    keywordAttr(
+      'job-settable-attributes-supported',
+      ...JOB_SETTABLE_ATTRIBUTES
+    ),
     // Identify-Printer (0x003C) capability advertisement (RFC 3998 / PWG):
     // which identify actions this emulator accepts, and which it uses by
     // default when the client sends none.
