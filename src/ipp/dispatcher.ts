@@ -49,6 +49,13 @@ import { handleIdentifyPrinter } from './operations/identify-printer.js';
 export interface OperationContext {
   identity: PrinterIdentity;
   queue: JobQueue;
+  /**
+   * Optional `ipps://…` URI, present only when the TLS/IPPS server is running.
+   * Get-Printer-Attributes adds it to printer-uri-supported (with `tls`
+   * security) so AirPrint clients learn the secure endpoint. Absent (default)
+   * keeps the advertised attribute set identical to the plaintext-only printer.
+   */
+  ippsUri?: string;
   /** Live printer-state at the moment of the request. */
   printerState: () => PrinterStateValue;
   /**

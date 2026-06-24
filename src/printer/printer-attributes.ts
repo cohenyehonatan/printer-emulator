@@ -72,14 +72,34 @@ export const SUPPORTED_FORMATS = [
 export function buildPrinterAttributes(
   identity: PrinterIdentity,
   state: PrinterStateValue = PrinterStates.IDLE,
-  stateReasons: string[] = ['none']
+  stateReasons: string[] = ['none'],
+  /**
+   * Optional `ipps://…` URI. When supplied (TLS enabled), it's added to
+   * printer-uri-supported (now 1setOf) alongside the plaintext `ipp://` URI,
+   * with the parallel `uri-security-supported`/`uri-authentication-supported`
+   * values gaining a `tls` entry. When omitted, the attribute set is byte-for-
+   * byte identical to the plaintext-only printer.
+   */
+  ippsUri?: string
 ): IppAttribute[] {
   const reasons = stateReasons.length > 0 ? stateReasons : ['none'];
   const version = `${IPP_VERSION_MAJOR}.${IPP_VERSION_MINOR}`;
+  // uri-security-supported / uri-authentication-supported are positional 1setOf
+  // attributes — value N describes URI N in printer-uri-supported (RFC 8011
+  // §5.4.2). Keep them in lockstep with the URI list.
+  const uriSupported = ippsUri
+    ? { name: 'printer-uri-supported', values: [identity.uri, ippsUri].map((u) => ({ tag: ValueTags.URI, value: u })) }
+    : uriAttr('printer-uri-supported', identity.uri);
+  const uriSecurity = ippsUri
+    ? keywordAttr('uri-security-supported', 'none', 'tls')
+    : keywordAttr('uri-security-supported', 'none');
+  const uriAuth = ippsUri
+    ? keywordAttr('uri-authentication-supported', 'requesting-user-name', 'requesting-user-name')
+    : keywordAttr('uri-authentication-supported', 'requesting-user-name');
   return [
-    uriAttr('printer-uri-supported', identity.uri),
-    keywordAttr('uri-security-supported', 'none'),
-    keywordAttr('uri-authentication-supported', 'requesting-user-name'),
+    uriSupported,
+    uriSecurity,
+    uriAuth,
     nameWithoutLangAttr('printer-name', identity.name),
     textWithoutLangAttr('printer-make-and-model', identity.makeAndModel),
     textWithoutLangAttr('printer-location', identity.location),
