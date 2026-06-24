@@ -28,13 +28,27 @@ export interface PrinterIdentity {
   name: string;
   uri: string;
   makeAndModel: string;
+  /** DNS-SD UUID (printer-uuid / mDNS UUID TXT key). */
+  uuid: string;
+  /** Physical location string (printer-location / mDNS note TXT key). */
+  location: string;
 }
 
 export const DEFAULT_IDENTITY: PrinterIdentity = {
   name: 'Emulated IPP Everywhere Printer',
   uri: 'ipp://localhost:631/ipp/print',
   makeAndModel: 'printer-emulator 0.1.0',
+  uuid: '564e4d57-0000-1000-8000-001122334455',
+  location: 'Emulator',
 };
+
+/**
+ * AirPrint URF (Universal Raster Format) capability string. Declared here so
+ * Get-Printer-Attributes and the mDNS TXT record advertise the same raster
+ * capabilities. The token list is an AirPrint-plausible IPP-Everywhere set.
+ */
+export const URF_SUPPORTED =
+  'CP1,DM3,IS1,MT1-3-4-5-8,OB10,PQ4,RS200-300,SRGB24,V1.4,W8,DEVW8';
 
 /** Document formats this emulated printer claims to accept. */
 export const SUPPORTED_FORMATS = [
@@ -61,6 +75,8 @@ export function buildPrinterAttributes(
     keywordAttr('uri-authentication-supported', 'requesting-user-name'),
     nameWithoutLangAttr('printer-name', identity.name),
     textWithoutLangAttr('printer-make-and-model', identity.makeAndModel),
+    textWithoutLangAttr('printer-location', identity.location),
+    uriAttr('printer-uuid', `urn:uuid:${identity.uuid}`),
     enumAttr('printer-state', state),
     keywordAttr('printer-state-reasons', 'none'),
     keywordAttr(
@@ -82,5 +98,6 @@ export function buildPrinterAttributes(
     keywordAttr('media-supported', 'iso_a4_210x297mm', 'na_letter_8.5x11in'),
     keywordAttr('sides-supported', 'one-sided', 'two-sided-long-edge'),
     keywordAttr('print-color-mode-supported', 'monochrome', 'color'),
+    keywordAttr('urf-supported', ...URF_SUPPORTED.split(',')),
   ];
 }
