@@ -32,6 +32,18 @@
  * source page. An out-of-bounds upper bound simply emits the pages that exist
  * (no throw). Absent/empty page-ranges renders every page.
  *
+ * `number-up` (RFC 8011 §5.2.15) tiles N consecutive source pages onto ONE
+ * output sheet in a grid. After decoding, filtering (`page-ranges`), and
+ * rotating, the surviving pages are grouped into batches of N and each batch is
+ * composited into a single sheet image (see compositeNUp / numberUpGrid). The
+ * grid is cols = ceil(sqrt(N)), rows = ceil(N/cols) (so 2→1×2, 4→2×2, 6→2×3,
+ * 9→3×3, 16→4×4). Each cell is the size of the FIRST page in the batch; every
+ * source page in the batch is scaled (nearest-neighbor) to fit its cell, so the
+ * sheet is `cellW*cols × cellH*rows`. A short final batch (fewer than N pages)
+ * just leaves its trailing cells white. The emitted PNG's suffix becomes
+ * `-p<sheetIndex>` with `sheetIndex` starting at 1 (sheet, not source-page,
+ * numbering). `number-up` ≤ 1 (or absent) keeps the one-PNG-per-page behavior.
+ *
  * Opt-in only: the print handlers invoke this just when a render target is
  * configured (RASTER_OUT env / --raster-out flag), so default runs, tests, and
  * CI write nothing. Writing never throws — a failed write is logged and the job
@@ -78,6 +90,13 @@ export interface RenderedPage {
  * the page's ACTUAL 1-based index, not a renumbering of the selected subset.
  * An undefined/empty list renders every page; an out-of-bounds range just emits
  * the pages that exist (never throws). See inSelectedRanges().
+ *
+ * `numberUp` honors `number-up`: when > 1, the surviving (post-filter,
+ * post-rotate) pages are grouped into batches of N and each batch is composited
+ * into ONE sheet PNG via compositeNUp(). The sheet's `-p<n>` suffix is the
+ * 1-based SHEET index (not source-page index); a 4-page job at number-up=2 emits
+ * `-p1.png` and `-p2.png`, two pages tiled each. `numberUp` ≤ 1 / undefined
+ * keeps one PNG per page (the source-page index suffix above).
  */
 export function renderRasterJob(
   documents: readonly Document[],
@@ -86,12 +105,16 @@ export function renderRasterJob(
   logger?: Logger,
   forceGrayscale = false,
   orientation?: OrientationRequestedValue,
-  pageRanges?: PageRange[]
+  pageRanges?: PageRange[],
+  numberUp?: number
 ): RenderedPage[] {
-  const written: RenderedPage[] = [];
   const degrees = orientationToDegrees(orientation);
-  let pageNum = 0;
 
+  // ── Pass 1: decode + page-ranges filter + monochrome/rotate, collecting the
+  // emit-ready pixel buffers (in source order). Keeping the prepared pages lets
+  // the N-up tiling step group them without re-decoding.
+  const prepared: PreparedPage[] = [];
+  let pageNum = 0;
   for (const doc of documents) {
     const pages = decodeRasterPages(doc.bytes);
     if (!pages) continue; // not a raster document
@@ -101,7 +124,6 @@ export function renderRasterJob(
       // page-ranges filter: skip a page whose 1-based index isn't selected. The
       // counter still advances so the emitted `-p<n>` reflects the real index.
       if (!inSelectedRanges(pageNum, pageRanges)) continue;
-      const path = `${prefix}-job${jobId}-p${pageNum}.png`;
       // monochrome mode: a color page is reduced to luma and emitted grayscale.
       const emitGray = !page.isColor || forceGrayscale;
       // Pick the source pixel buffer + samples-per-pixel for the emit path:
@@ -125,35 +147,266 @@ export function renderRasterJob(
         degrees
       );
 
-      try {
-        const png = isRgb
-          ? encodeRgbPng(rotated.width, rotated.height, rotated.pixels)
-          : encodeGrayPng(rotated.width, rotated.height, rotated.pixels);
-        writeFileSync(path, png);
-        written.push({
-          page: pageNum,
-          path,
-          widthPx: rotated.width,
-          heightPx: rotated.height,
-        });
-        logger?.info('Rendered raster page to PNG', {
-          path,
-          width: rotated.width,
-          height: rotated.height,
-          dpi: page.dpi,
-          color: isRgb,
-          rotation: degrees,
-        });
-      } catch (err) {
-        logger?.warn('Failed to write raster PNG', {
-          path,
-          error: (err as Error).message,
-        });
-      }
+      prepared.push({
+        index: pageNum,
+        width: rotated.width,
+        height: rotated.height,
+        bytesPerPixel,
+        isRgb,
+        pixels: rotated.pixels,
+        dpi: page.dpi,
+      });
     }
   }
 
+  // ── Pass 2: emit. number-up ≤ 1 (or undefined) → one PNG per page (suffix =
+  // source-page index). number-up > 1 → tile N pages per sheet (suffix = sheet
+  // index, starting at 1).
+  const nup = numberUp !== undefined && numberUp > 1 ? Math.trunc(numberUp) : 1;
+  if (nup <= 1) {
+    return emitPerPage(prepared, jobId, prefix, degrees, logger);
+  }
+  return emitNUp(prepared, nup, jobId, prefix, degrees, logger);
+}
+
+/**
+ * An emit-ready page: the (already monochrome-reduced and rotated) pixel buffer
+ * plus its dimensions, samples-per-pixel, color flag, source 1-based index, and
+ * resolution. Produced by renderRasterJob's decode pass and consumed by the
+ * per-page or N-up emit step.
+ */
+interface PreparedPage {
+  /** 1-based source-page index (across all the job's raster documents). */
+  index: number;
+  width: number;
+  height: number;
+  /** 1 for grayscale, 3 for RGB. */
+  bytesPerPixel: number;
+  isRgb: boolean;
+  pixels: Uint8Array;
+  dpi: number;
+}
+
+/**
+ * Emit one PNG per prepared page (`number-up` ≤ 1) as `…-p<sourceIndex>.png`,
+ * preserving the original per-page filename + dimensions. Never throws; a failed
+ * write is logged and skipped.
+ */
+function emitPerPage(
+  prepared: readonly PreparedPage[],
+  jobId: number,
+  prefix: string,
+  degrees: 0 | 90 | 180 | 270,
+  logger?: Logger
+): RenderedPage[] {
+  const written: RenderedPage[] = [];
+  for (const p of prepared) {
+    const path = `${prefix}-job${jobId}-p${p.index}.png`;
+    try {
+      const png = p.isRgb
+        ? encodeRgbPng(p.width, p.height, p.pixels)
+        : encodeGrayPng(p.width, p.height, p.pixels);
+      writeFileSync(path, png);
+      written.push({
+        page: p.index,
+        path,
+        widthPx: p.width,
+        heightPx: p.height,
+      });
+      logger?.info('Rendered raster page to PNG', {
+        path,
+        width: p.width,
+        height: p.height,
+        dpi: p.dpi,
+        color: p.isRgb,
+        rotation: degrees,
+      });
+    } catch (err) {
+      logger?.warn('Failed to write raster PNG', {
+        path,
+        error: (err as Error).message,
+      });
+    }
+  }
   return written;
+}
+
+/**
+ * Emit one composited sheet PNG per batch of `n` prepared pages
+ * (`number-up` > 1) as `…-p<sheetIndex>.png` with `sheetIndex` starting at 1.
+ * Each batch is laid out by compositeNUp() into a single sheet; a short final
+ * batch leaves its trailing cells white. The `page` field of each RenderedPage
+ * is the 1-based sheet index. Never throws; a failed write is logged and skipped.
+ */
+function emitNUp(
+  prepared: readonly PreparedPage[],
+  n: number,
+  jobId: number,
+  prefix: string,
+  degrees: 0 | 90 | 180 | 270,
+  logger?: Logger
+): RenderedPage[] {
+  const written: RenderedPage[] = [];
+  const grid = numberUpGrid(n);
+  let sheetIndex = 0;
+  for (let start = 0; start < prepared.length; start += n) {
+    sheetIndex++;
+    const batch = prepared.slice(start, start + n);
+    const sheet = compositeNUp(batch, grid);
+    const path = `${prefix}-job${jobId}-p${sheetIndex}.png`;
+    try {
+      const png = sheet.isRgb
+        ? encodeRgbPng(sheet.width, sheet.height, sheet.pixels)
+        : encodeGrayPng(sheet.width, sheet.height, sheet.pixels);
+      writeFileSync(path, png);
+      written.push({
+        page: sheetIndex,
+        path,
+        widthPx: sheet.width,
+        heightPx: sheet.height,
+      });
+      logger?.info('Rendered N-up raster sheet to PNG', {
+        path,
+        width: sheet.width,
+        height: sheet.height,
+        numberUp: n,
+        cols: grid.cols,
+        rows: grid.rows,
+        pages: batch.length,
+        color: sheet.isRgb,
+        rotation: degrees,
+      });
+    } catch (err) {
+      logger?.warn('Failed to write N-up raster PNG', {
+        path,
+        error: (err as Error).message,
+      });
+    }
+  }
+  return written;
+}
+
+/** A grid layout for `number-up`: `cols` columns × `rows` rows. */
+export interface NUpGrid {
+  cols: number;
+  rows: number;
+}
+
+/**
+ * Grid layout for `number-up=n`: `cols = ceil(sqrt(n))`, `rows = ceil(n/cols)`.
+ * This yields the conventional near-square arrangements — 1→1×1, 2→1×2, 4→2×2,
+ * 6→2×3, 9→3×3, 16→4×4 — filling row-major (left→right, top→bottom). A value < 1
+ * or non-finite clamps to 1 (a single 1×1 cell). Never throws. Pure.
+ */
+export function numberUpGrid(n: number): NUpGrid {
+  const count = Number.isFinite(n) ? Math.max(1, Math.trunc(n)) : 1;
+  const cols = Math.ceil(Math.sqrt(count));
+  const rows = Math.ceil(count / cols);
+  return { cols, rows };
+}
+
+/** A composited N-up sheet: the combined pixel buffer plus its dimensions. */
+export interface CompositedSheet {
+  width: number;
+  height: number;
+  /** True when the sheet is RGB (3 bpp); false for grayscale (1 bpp). */
+  isRgb: boolean;
+  pixels: Uint8Array;
+}
+
+/**
+ * Composite a batch of prepared pages into ONE sheet using `grid` (cols×rows,
+ * row-major). The cell size is the FIRST page's dimensions (cellW×cellH); the
+ * sheet is `cellW*cols × cellH*rows`. Every page in the batch is scaled
+ * (nearest-neighbor) to fit its cell and written at the cell's pixel offset.
+ *
+ * Color normalization: if any page in the batch is RGB the whole sheet is RGB
+ * (3 bpp) and grayscale pages are promoted to RGB (r=g=b=gray); otherwise the
+ * sheet is grayscale (1 bpp). Empty cells (a short final batch, or a page with a
+ * degenerate size) are left white (0xff) so an under-full sheet reads as blank
+ * paper rather than black. Never throws; an empty batch yields a 0×0 sheet.
+ */
+export function compositeNUp(
+  batch: readonly PreparedPage[],
+  grid: NUpGrid
+): CompositedSheet {
+  const cols = Math.max(1, Math.trunc(grid.cols));
+  const rows = Math.max(1, Math.trunc(grid.rows));
+
+  // Cell = first page's dims (assume roughly uniform pages; differing pages are
+  // each scaled into this cell). A degenerate/empty batch → 0×0 sheet.
+  const first = batch[0];
+  const cellW = first ? Math.max(0, Math.trunc(first.width)) : 0;
+  const cellH = first ? Math.max(0, Math.trunc(first.height)) : 0;
+  const isRgb = batch.some((p) => p.isRgb);
+  const bpp = isRgb ? 3 : 1;
+
+  const sheetW = cellW * cols;
+  const sheetH = cellH * rows;
+  // White background (0xff) so empty/short-batch cells read as blank paper.
+  const pixels = new Uint8Array(sheetW * sheetH * bpp).fill(0xff);
+  if (sheetW === 0 || sheetH === 0) {
+    return { width: sheetW, height: sheetH, isRgb, pixels };
+  }
+
+  batch.forEach((page, i) => {
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    const offX = col * cellW;
+    const offY = row * cellH;
+    blitScaled(page, pixels, sheetW, offX, offY, cellW, cellH, isRgb);
+  });
+
+  return { width: sheetW, height: sheetH, isRgb, pixels };
+}
+
+/**
+ * Scale one prepared page (nearest-neighbor) into a `cellW×cellH` cell of the
+ * sheet at pixel offset (`offX`,`offY`), writing into the row-major `dst` buffer
+ * (`sheetW` wide, `bpp` = 3 when `sheetIsRgb` else 1). A grayscale page written
+ * into an RGB sheet is promoted to RGB (r=g=b). A degenerate page size leaves
+ * the cell untouched (white). Bounds-safe: missing source samples read as 0.
+ */
+function blitScaled(
+  page: PreparedPage,
+  dst: Uint8Array,
+  sheetW: number,
+  offX: number,
+  offY: number,
+  cellW: number,
+  cellH: number,
+  sheetIsRgb: boolean
+): void {
+  const srcW = Math.max(0, Math.trunc(page.width));
+  const srcH = Math.max(0, Math.trunc(page.height));
+  if (srcW === 0 || srcH === 0 || cellW === 0 || cellH === 0) return;
+  const dstBpp = sheetIsRgb ? 3 : 1;
+  const srcBpp = page.bytesPerPixel;
+
+  for (let dy = 0; dy < cellH; dy++) {
+    // Nearest-neighbor source row for this destination row.
+    const sy = Math.min(srcH - 1, Math.floor((dy * srcH) / cellH));
+    for (let dx = 0; dx < cellW; dx++) {
+      const sx = Math.min(srcW - 1, Math.floor((dx * srcW) / cellW));
+      const sBase = (sy * srcW + sx) * srcBpp;
+      const dBase = ((offY + dy) * sheetW + (offX + dx)) * dstBpp;
+      if (sheetIsRgb) {
+        if (srcBpp === 3) {
+          dst[dBase] = page.pixels[sBase] ?? 0;
+          dst[dBase + 1] = page.pixels[sBase + 1] ?? 0;
+          dst[dBase + 2] = page.pixels[sBase + 2] ?? 0;
+        } else {
+          // Promote grayscale → RGB (r=g=b).
+          const g = page.pixels[sBase] ?? 0;
+          dst[dBase] = g;
+          dst[dBase + 1] = g;
+          dst[dBase + 2] = g;
+        }
+      } else {
+        dst[dBase] = page.pixels[sBase] ?? 0;
+      }
+    }
+  }
 }
 
 /**

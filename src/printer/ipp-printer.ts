@@ -303,10 +303,11 @@ export class IppPrinter extends EventEmitter {
    *
    * The job's `print-color-mode=monochrome` forces the in-process PWG/URF path
    * to emit grayscale PNGs even for color pages, `orientation-requested` rotates
-   * the decoded PWG/URF page (90°/180°/270°) before encoding, and `page-ranges`
-   * limits the PWG/URF path to the selected 1-based pages. (The Ghostscript
-   * PDF/PS path is left in color, unrotated, and unfiltered regardless — gs
-   * colour/orientation/range control isn't threaded here; see README.)
+   * the decoded PWG/URF page (90°/180°/270°) before encoding, `page-ranges`
+   * limits the PWG/URF path to the selected 1-based pages, and `number-up` tiles
+   * N consecutive pages onto one sheet. (The Ghostscript PDF/PS path is left in
+   * color, unrotated, unfiltered, and not N-up'd regardless — gs
+   * colour/orientation/range/number-up control isn't threaded here; see README.)
    */
   private renderRaster(job: Job): void {
     const prefix = this.config.rasterOut;
@@ -322,7 +323,8 @@ export class IppPrinter extends EventEmitter {
       this.logger,
       forceGrayscale,
       job.orientation,
-      job.pageRanges
+      job.pageRanges,
+      job.numberUp
     );
 
     // Ghostscript-backed PDF/PostScript rasterization. gs numbers pages
