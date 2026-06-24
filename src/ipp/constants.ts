@@ -200,6 +200,20 @@ export type OrientationRequestedValue =
 /** Default `orientation-requested` when a client omits it: portrait. */
 export const ORIENTATION_REQUESTED_DEFAULT = OrientationRequested.PORTRAIT;
 
+// ── number-up integer values — RFC 8011 §5.2.15 ──────────────────────────
+/**
+ * The `number-up` (integer ≥ 1) grid values this emulator advertises in
+ * `number-up-supported`: 1, 2, 4, 6, 9, 16. `number-up` tiles N consecutive
+ * source pages onto one output sheet in a grid (see documents/raster-render.ts).
+ * A client may request any positive integer; an out-of-set value is still
+ * honored by the render path (it just isn't advertised), and a value < 1 / absent
+ * is treated as 1 (one page per sheet — the existing behavior).
+ */
+export const NUMBER_UP_SUPPORTED = [1, 2, 4, 6, 9, 16] as const;
+
+/** Default `number-up` when a client omits it: 1 (one source page per sheet). */
+export const NUMBER_UP_DEFAULT = 1;
+
 // ── media keyword values (PWG self-describing media size names) ────────────
 /**
  * The two `media` (type2 keyword) sizes this emulator advertises. PWG 5101.1

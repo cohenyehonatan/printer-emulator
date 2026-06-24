@@ -4,8 +4,8 @@
  * Beyond `copies`/`job-hold-until`, real IPP clients (CUPS, AirPrint, ipptool)
  * routinely send a handful of Job Template attributes that select how a job is
  * rendered: `print-color-mode`, `print-quality`, `sides`,
- * `orientation-requested`, `media`, and `page-ranges` (RFC 8011 §5.2 / PWG
- * 5100.13). This
+ * `orientation-requested`, `media`, `page-ranges`, and `number-up` (RFC 8011
+ * §5.2 / PWG 5100.13). This
  * module reads them from the job-attributes group of Print-Job/Create-Job (and
  * the same group Set-Job-Attributes carries), validates each against the value
  * set this emulator advertises, and clamps/ignores anything unknown to the
@@ -97,6 +97,21 @@ export function normalizeMedia(
     : undefined;
 }
 
+/**
+ * Normalize the `number-up` job-template attribute (integer ≥ 1, RFC 8011
+ * §5.2.15). A finite value of at least 1 is truncated to an integer and kept; a
+ * value < 1, a non-finite/unparseable value, or an absent attribute yields
+ * undefined — the caller leaves the field unset, which the render path treats
+ * as 1 (one source page per sheet, the existing behavior). Never throws.
+ */
+export function normalizeNumberUp(
+  value: number | undefined
+): number | undefined {
+  if (value === undefined || !Number.isFinite(value)) return undefined;
+  const n = Math.trunc(value);
+  return n >= 1 ? n : undefined;
+}
+
 /** A normalized 1-based, inclusive page range (`page-ranges` member). */
 export interface PageRange {
   lower: number;
@@ -133,6 +148,7 @@ export interface JobTemplate {
   orientation?: OrientationRequestedValue;
   media?: MediaValue;
   pageRanges?: PageRange[];
+  numberUp?: number;
 }
 
 /**
@@ -154,5 +170,6 @@ export function readJobTemplate(jobAttrs: IppAttribute[]): JobTemplate {
     ),
     media: normalizeMedia(firstString(findAttr(jobAttrs, 'media'))),
     pageRanges: normalizePageRanges(allRanges(findAttr(jobAttrs, 'page-ranges'))),
+    numberUp: normalizeNumberUp(firstNumber(findAttr(jobAttrs, 'number-up'))),
   };
 }

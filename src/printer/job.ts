@@ -91,10 +91,11 @@ export interface JobInit {
   /**
    * The common print Job Template attributes the client supplied on
    * Print-Job/Create-Job (`print-color-mode`, `print-quality`, `sides`,
-   * `orientation-requested`, `media`, `page-ranges`). Already normalized to the
-   * advertised value set (unknown/invalid values arrive as undefined). Stored
-   * verbatim so Get-Job-Attributes can echo them and the render path can honor
-   * `print-color-mode` / `page-ranges`. See ipp/job-template.ts.
+   * `orientation-requested`, `media`, `page-ranges`, `number-up`). Already
+   * normalized to the advertised value set (unknown/invalid values arrive as
+   * undefined). Stored verbatim so Get-Job-Attributes can echo them and the
+   * render path can honor `print-color-mode` / `page-ranges` / `number-up`. See
+   * ipp/job-template.ts.
    */
   template?: JobTemplate;
 }
@@ -147,6 +148,15 @@ export class Job {
    */
   private _pageRanges: PageRange[] | undefined;
   /**
+   * The requested `number-up` (RFC 8011 §5.2.15) — how many consecutive source
+   * pages are tiled onto one output sheet (2-up, 4-up, …), or undefined when the
+   * client supplied none (one page per sheet). Drives the render path: when > 1,
+   * the (post-filter, post-rotate) pages are grouped into batches of N and each
+   * batch is composited into a single sheet PNG (see raster-render.ts). Echoed by
+   * Get-Job-Attributes / Get-Jobs as an integer once set.
+   */
+  private _numberUp: number | undefined;
+  /**
    * Number of times this job has run to `completed`. Starts at 0 and increments
    * each time process() reaches COMPLETE. A Restart-Job (§4.3.7) re-queues a
    * terminal job and runs it again, so a second completion bumps this to 2 —
@@ -170,6 +180,7 @@ export class Job {
     this._orientation = init.template?.orientation;
     this._media = init.template?.media;
     this._pageRanges = init.template?.pageRanges;
+    this._numberUp = init.template?.numberUp;
 
     if (init.document) {
       this._documents.push(init.document);
@@ -353,6 +364,15 @@ export class Job {
    */
   get pageRanges(): PageRange[] | undefined {
     return this._pageRanges;
+  }
+
+  /**
+   * The job's requested `number-up` (consecutive source pages per output sheet),
+   * or undefined when the client never set one (one page per sheet). Echoed once
+   * set; consumed by the render path to tile pages into a grid.
+   */
+  get numberUp(): number | undefined {
+    return this._numberUp;
   }
 
   /**
