@@ -9,14 +9,22 @@
 
 import { ValueTags, type ValueTag } from './constants.js';
 
+/**
+ * A rangeOfInteger value (RFC 8010 §3.5.2, value-tag 0x33): two 4-byte
+ * big-endian integers, lower then upper bound (inclusive). Decoded/encoded as
+ * the `[lower, upper]` tuple so e.g. `page-ranges=2-3` is `[2, 3]`.
+ */
+export type IppRange = [number, number];
+
 /** A single tagged value within an attribute. */
 export interface IppValue {
   tag: ValueTag;
   /**
    * Decoded value. integers/enums/booleans are `number`/`boolean`; string
-   * families are `string`; octetString and unknown raw values are `Buffer`.
+   * families are `string`; rangeOfInteger is an `[lower, upper]` tuple;
+   * octetString and unknown raw values are `Buffer`.
    */
-  value: number | boolean | string | Buffer;
+  value: number | boolean | string | Buffer | IppRange;
 }
 
 /** A named attribute holding one (or, for 1setOf, several) values. */
@@ -53,6 +61,20 @@ export function integersAttr(name: string, ...values: number[]): IppAttribute {
 
 export function booleanAttr(name: string, value: boolean): IppAttribute {
   return { name, values: [{ tag: ValueTags.BOOLEAN, value }] };
+}
+
+/**
+ * 1setOf rangeOfInteger (e.g. `page-ranges`). Each `[lower, upper]` tuple
+ * becomes a rangeOfInteger value (value-tag 0x33). RFC 8010 §3.5.2.
+ */
+export function rangesAttr(
+  name: string,
+  ...ranges: IppRange[]
+): IppAttribute {
+  return {
+    name,
+    values: ranges.map((value) => ({ tag: ValueTags.RANGE_OF_INTEGER, value })),
+  };
 }
 
 export function keywordAttr(name: string, ...values: string[]): IppAttribute {
@@ -120,6 +142,24 @@ export function allStrings(attr: IppAttribute | undefined): string[] {
   return attr.values
     .map((v) => v.value)
     .filter((v): v is string => typeof v === 'string');
+}
+
+/**
+ * Every rangeOfInteger value of an attribute (e.g. a 1setOf `page-ranges`) as
+ * `[lower, upper]` tuples, in order. Non-range values are skipped. Empty when
+ * the attribute is absent or carries no ranges.
+ */
+export function allRanges(attr: IppAttribute | undefined): IppRange[] {
+  if (!attr) return [];
+  return attr.values
+    .map((v) => v.value)
+    .filter(
+      (v): v is IppRange =>
+        Array.isArray(v) &&
+        v.length === 2 &&
+        typeof v[0] === 'number' &&
+        typeof v[1] === 'number'
+    );
 }
 
 /** Find an attribute by name within a flat list. */

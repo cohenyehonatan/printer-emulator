@@ -115,13 +115,23 @@ function readAttributeValue(
 }
 
 /** Decode a raw value buffer into a typed JS value based on its tag. */
-function decodeValue(tag: ValueTag, raw: Buffer): number | boolean | string | Buffer {
+function decodeValue(
+  tag: ValueTag,
+  raw: Buffer
+): number | boolean | string | Buffer | [number, number] {
   switch (tag) {
     case ValueTags.INTEGER:
     case ValueTags.ENUM:
       return raw.length >= 4 ? raw.readInt32BE(0) : 0;
     case ValueTags.BOOLEAN:
       return raw.length >= 1 ? raw.readUInt8(0) !== 0 : false;
+    case ValueTags.RANGE_OF_INTEGER:
+      // Two 4-byte big-endian integers: lower then upper bound (inclusive). A
+      // short buffer reads the missing bounds as 0 so malformed input is safe.
+      return [
+        raw.length >= 4 ? raw.readInt32BE(0) : 0,
+        raw.length >= 8 ? raw.readInt32BE(4) : 0,
+      ];
     case ValueTags.KEYWORD:
     case ValueTags.URI:
     case ValueTags.URI_SCHEME:

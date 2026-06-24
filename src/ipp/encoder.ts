@@ -59,7 +59,7 @@ function writeAttributeValue(
 /** Encode a typed JS value into its raw value buffer based on the tag. */
 function encodeValue(
   tag: ValueTag,
-  value: number | boolean | string | Buffer
+  value: number | boolean | string | Buffer | [number, number]
 ): Buffer {
   switch (tag) {
     case ValueTags.INTEGER:
@@ -71,6 +71,15 @@ function encodeValue(
     case ValueTags.BOOLEAN: {
       const b = Buffer.allocUnsafe(1);
       b.writeUInt8(value ? 1 : 0, 0);
+      return b;
+    }
+    case ValueTags.RANGE_OF_INTEGER: {
+      // Two 4-byte big-endian integers: lower then upper bound. Defends against
+      // a non-tuple value (treated as [0, 0]) so encoding never throws.
+      const [lower, upper] = Array.isArray(value) ? value : [0, 0];
+      const b = Buffer.allocUnsafe(8);
+      b.writeInt32BE(Number(lower) | 0, 0);
+      b.writeInt32BE(Number(upper) | 0, 4);
       return b;
     }
     case ValueTags.NO_VALUE:
