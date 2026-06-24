@@ -36,6 +36,8 @@ import { handleValidateJob } from './operations/validate-job.js';
 import { handleGetJobs } from './operations/get-jobs.js';
 import { handleGetJobAttributes } from './operations/get-job-attributes.js';
 import { handleCancelJob } from './operations/cancel-job.js';
+import { handlePurgeJobs } from './operations/purge-jobs.js';
+import { handleCancelMyJobs } from './operations/cancel-my-jobs.js';
 import { handleCreateJob } from './operations/create-job.js';
 import { handleSendDocument } from './operations/send-document.js';
 import { handleCloseJob } from './operations/close-job.js';
@@ -99,6 +101,8 @@ const HANDLERS: Record<number, OperationHandler> = {
   [OperationIds.GET_JOBS]: handleGetJobs,
   [OperationIds.GET_JOB_ATTRIBUTES]: handleGetJobAttributes,
   [OperationIds.CANCEL_JOB]: handleCancelJob,
+  [OperationIds.PURGE_JOBS]: handlePurgeJobs,
+  [OperationIds.CANCEL_MY_JOBS]: handleCancelMyJobs,
   [OperationIds.CREATE_JOB]: handleCreateJob,
   [OperationIds.SEND_DOCUMENT]: handleSendDocument,
   [OperationIds.CLOSE_JOB]: handleCloseJob,

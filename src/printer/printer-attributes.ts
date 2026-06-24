@@ -124,6 +124,8 @@ export function buildPrinterAttributes(
         OperationIds.CREATE_JOB,
         OperationIds.SEND_DOCUMENT,
         OperationIds.CANCEL_JOB,
+        OperationIds.PURGE_JOBS,
+        OperationIds.CANCEL_MY_JOBS,
         OperationIds.GET_JOB_ATTRIBUTES,
         OperationIds.GET_JOBS,
         OperationIds.GET_PRINTER_ATTRIBUTES,

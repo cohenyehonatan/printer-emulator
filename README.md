@@ -118,7 +118,7 @@ ippfind _ipps._tcp                 # or: dns-sd -B _ipps._tcp
 
 ```bash
 npm install
-npm test        # vitest: codec round-trip, decoder, formats, raster-info, buffer reader, mDNS, Get-Jobs, Get-Job-Attributes, Cancel-Job, Hold/Release-Job, Restart-Job, job-hold-until, Pause/Resume/Identify-Printer, Create/Send/Close multi-doc, requested-attributes
+npm test        # vitest: codec round-trip, decoder, formats, raster-info, buffer reader, mDNS, Get-Jobs, Get-Job-Attributes, Cancel-Job, Purge-Jobs, Cancel-My-Jobs, Hold/Release-Job, Restart-Job, job-hold-until, Pause/Resume/Identify-Printer, Create/Send/Close multi-doc, requested-attributes
 ```
 
 **Runtime dependency:** `bonjour-service` provides the mDNS/DNS-SD responder
@@ -181,6 +181,20 @@ npx tsx src/index.ts scenario   # run the scenarios
   job → canceled); returns `client-error-not-possible` for a job already in a
   terminal state (completed/canceled/aborted) and `client-error-not-found` for
   an unknown job.
+- `Purge-Jobs` (0x0012) — RFC 8011 §4.2.9: empties the queue **entirely**,
+  removing ALL jobs including retained terminal ones (completed/canceled/
+  aborted), so a subsequent `Get-Jobs` (any `which-jobs`) returns nothing.
+  Always `successful-ok`. **No-auth caveat:** real IPP gates Purge-Jobs behind
+  operator/admin authorization; this emulator has no auth layer, so it performs
+  the purge unconditionally.
+- `Cancel-My-Jobs` (0x0039) — RFC 3998: cancels all **not-completed** jobs
+  (pending / pending-held / processing / processing-stopped) owned by the
+  `requesting-user-name`, via the same `job.cancel()` state-machine path
+  Cancel-Job uses; already-terminal jobs are left untouched. When the optional
+  `job-ids` (1setOf integer) is supplied the cancel set is restricted to those
+  ids. When `requesting-user-name` is **absent** it falls back to cancelling all
+  not-completed jobs (the emulator has no auth identity / "current user").
+  Always `successful-ok`.
 - `Hold-Job` (0x000C) — holds a job by `job-id`/`job-uri`: a `pending` job moves
   to `pending-held` (job-state 4) via the state machine's HOLD path; a job
   already held is left held (idempotent `successful-ok`). A processing or
