@@ -26,6 +26,7 @@ import {
   nameWithoutLangAttr,
   mimeMediaTypeAttr,
   keywordAttr,
+  integerAttr,
 } from '../ipp/attribute.js';
 import {
   operationGroup,
@@ -80,6 +81,14 @@ export class IppClient {
   async getJobs(): Promise<IppResponse> {
     const request = this.baseRequest(OperationIds.GET_JOBS, [
       keywordAttr('which-jobs', 'not-completed'),
+    ]);
+    return this.send(request);
+  }
+
+  /** Get-Job-Attributes: fetch the attributes of a single job by id. */
+  async getJobAttributes(jobId: number): Promise<IppResponse> {
+    const request = this.baseRequest(OperationIds.GET_JOB_ATTRIBUTES, [
+      integerAttr('job-id', jobId),
     ]);
     return this.send(request);
   }

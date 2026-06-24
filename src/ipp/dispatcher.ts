@@ -33,6 +33,7 @@ import { handleGetPrinterAttributes } from './operations/get-printer-attributes.
 import { handlePrintJob } from './operations/print-job.js';
 import { handleValidateJob } from './operations/validate-job.js';
 import { handleGetJobs } from './operations/get-jobs.js';
+import { handleGetJobAttributes } from './operations/get-job-attributes.js';
 import { handleCancelJob } from './operations/cancel-job.js';
 
 /** Shared context passed to every operation handler. */
@@ -53,6 +54,7 @@ const HANDLERS: Record<number, OperationHandler> = {
   [OperationIds.PRINT_JOB]: handlePrintJob,
   [OperationIds.VALIDATE_JOB]: handleValidateJob,
   [OperationIds.GET_JOBS]: handleGetJobs,
+  [OperationIds.GET_JOB_ATTRIBUTES]: handleGetJobAttributes,
   [OperationIds.CANCEL_JOB]: handleCancelJob,
 };
 
