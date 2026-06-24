@@ -76,7 +76,7 @@ npm run start:emulator                 # defaults to 631; set PORT to change
 
 ```bash
 npm install
-npm test        # vitest: codec round-trip, decoder, formats, raster-info, buffer reader, mDNS, Get-Jobs, Get-Job-Attributes, Cancel-Job, Create/Send/Close multi-doc, requested-attributes
+npm test        # vitest: codec round-trip, decoder, formats, raster-info, buffer reader, mDNS, Get-Jobs, Get-Job-Attributes, Cancel-Job, Hold/Release-Job, Create/Send/Close multi-doc, requested-attributes
 ```
 
 **Runtime dependency:** `bonjour-service` provides the mDNS/DNS-SD responder
@@ -136,6 +136,18 @@ npx tsx src/index.ts scenario   # run the scenarios
   job → canceled); returns `client-error-not-possible` for a job already in a
   terminal state (completed/canceled/aborted) and `client-error-not-found` for
   an unknown job.
+- `Hold-Job` (0x000C) — holds a job by `job-id`/`job-uri`: a `pending` job moves
+  to `pending-held` (job-state 4) via the state machine's HOLD path; a job
+  already held is left held (idempotent `successful-ok`). A processing or
+  terminal job → `client-error-not-possible`; unknown job →
+  `client-error-not-found`. (The optional `job-hold-until` attribute is accepted
+  and ignored — the job is held until an explicit Release-Job.)
+- `Release-Job` (0x000D) — releases a `pending-held` job back to `pending` and
+  runs the emulated print (pending → processing → completed) via the same path
+  Close-Job/last-document uses, so a held job actually prints on release.
+  Releasing a job that is not held is a successful no-op (`successful-ok`);
+  a terminal job → `client-error-not-possible`; unknown job →
+  `client-error-not-found`.
 - PWG-Raster / Apple-URF page-header parsing — `documents/raster-info.ts` walks
   the fixed-layout page headers (PWG `RaS2`, URF `UNIRAST\0`), counting pages
   and reading each page's pixel width/height + resolution; the PackBits line

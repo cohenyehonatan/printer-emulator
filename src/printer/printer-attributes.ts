@@ -100,6 +100,8 @@ export function buildPrinterAttributes(
         OperationIds.GET_JOB_ATTRIBUTES,
         OperationIds.GET_JOBS,
         OperationIds.GET_PRINTER_ATTRIBUTES,
+        OperationIds.HOLD_JOB,
+        OperationIds.RELEASE_JOB,
         OperationIds.CLOSE_JOB,
       ].map((op) => ({ tag: ValueTags.ENUM, value: op })),
     },
