@@ -18,6 +18,11 @@ export interface JobInit {
   document: Document;
   jobName?: string;
   requestingUserName?: string;
+  /**
+   * Total impressions (sides/pages) in the job. Populated from a parsed
+   * raster page count when known; defaults to 1 for non-raster/unparsed input.
+   */
+  impressions?: number;
 }
 
 export class Job {
@@ -27,6 +32,8 @@ export class Job {
   readonly jobName: string;
   readonly requestingUserName: string;
   readonly createdAt: Date;
+  /** Total impressions (sides) in the job; at least 1. */
+  readonly impressions: number;
   private readonly sm: JobStateMachine;
 
   constructor(init: JobInit) {
@@ -36,6 +43,7 @@ export class Job {
     this.jobName = init.jobName ?? `job-${init.id}`;
     this.requestingUserName = init.requestingUserName ?? 'anonymous';
     this.createdAt = new Date();
+    this.impressions = Math.max(1, init.impressions ?? 1);
     this.sm = new JobStateMachine(JobState.PENDING);
   }
 
