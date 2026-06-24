@@ -2,11 +2,14 @@
  * PWG-Raster / Apple-URF page pixel decoder.
  *
  * Where `raster-info.ts` only *skips* the compressed line stream to count
- * pages, this module actually decodes the pixels of each page into an 8-bit
- * grayscale buffer suitable for emitting an image. It re-walks the same
- * fixed-layout page headers (PWG 5102.4 `cups_page_header2_s` / Apple URF
- * 32-byte header) but, per page, expands the PackBits-style line encoding into
- * real pixel rows.
+ * pages, this module actually decodes the pixels of each page into a pixel
+ * buffer suitable for emitting an image. It re-walks the same fixed-layout page
+ * headers (PWG 5102.4 `cups_page_header2_s` / Apple URF 32-byte header) but,
+ * per page, expands the PackBits-style line encoding into real pixel rows.
+ *
+ * Output is 8-bit grayscale for grayscale/black/CMYK sources, and 8-bit RGB
+ * (3 bytes/pixel) for RGB color spaces — a page reports which via `isColor`
+ * and carries the matching `gray` or `rgb` buffer.
  *
  * Line encoding (shared by both formats, PWG 5102.4 §"Raster Data"):
  *   - Each line group starts with a line-repeat byte: the decoded line is
@@ -22,32 +25,47 @@
  *     single byte that *packs multiple pixels* (eight 1-bit pixels, MSB-first);
  *     the RLE run count then counts these packed bytes, not individual pixels.
  *
- * Color/bit-depth handling (all reduced to one 8-bit gray sample per pixel):
+ * Color/bit-depth handling:
  *   - 8-bit grayscale (sGray / device-gray / black): pass the byte through
- *     (black colorSpace is inverted so 0 ink = white).
+ *     (black colorSpace is inverted so 0 ink = white). → `gray`.
  *   - 1-bit (sGray / gray / black): unpack 8 pixels per byte, MSB-first,
  *     honoring cupsWidth so trailing padding bits in the last byte are ignored.
  *     Polarity by colorSpace: additive W/sGray → 0=black, 1=white; subtractive
- *     black (K) → 1=black, 0=white.
+ *     black (K) → 1=black, 0=white. → `gray`.
  *   - 16-bit grayscale: each pixel is 2 bytes big-endian; downsample to 8 bits
- *     by taking the high byte.
- *   - sRGB24 / device-RGB (3 bytes): Rec.601 luma.
- *   - CMYK (4 bytes, 8-bit channels): convert to RGB via
- *     R=255*(1-C/255)*(1-K/255) (and G,B) then Rec.601 luma.
+ *     by taking the high byte. → `gray`.
+ *   - sRGB24 / device-RGB / AdobeRGB (3 bytes, 8-bit channels): preserved as
+ *     RGB. → `rgb` (3 bytes/pixel), `isColor` true.
+ *   - 48-bit RGB (16-bit channels): take the high byte of each of R,G,B.
+ *     → `rgb`, `isColor` true.
+ *   - CMYK (4 bytes, 8-bit channels): converted to grayscale luma, *not* RGB.
+ *     Color print jobs in the wild arrive as RGB; CMYK in this emulator only
+ *     ever appeared as a luma backstop, so it stays gray to keep the page's
+ *     visual output (and existing tests) stable. Conversion: RGB via
+ *     R=255*(1-C/255)*(1-K/255) (and G,B) then Rec.601 luma. → `gray`.
  *
  * Robustness: truncated or malformed input never throws. Whatever rows/pixels
  * could be decoded are kept; the rest of the page is left as padding (0) and
  * decoding stops cleanly at the point of damage.
  */
 
-/** A decoded page: 8-bit grayscale pixels, row-major, length width*height. */
+/**
+ * A decoded page. Pixels are row-major. Grayscale/black/CMYK sources carry
+ * `gray` (1 byte/pixel) with `isColor` false; RGB color spaces carry `rgb`
+ * (3 bytes/pixel, R,G,B) with `isColor` true. Exactly one buffer is populated
+ * per page; the other is an empty `Uint8Array(0)`.
+ */
 export interface DecodedRasterPage {
   widthPx: number;
   heightPx: number;
   /** Resolution in DPI (feed/cross-feed averaged to a single number). */
   dpi: number;
-  /** width*height grayscale samples (0 = black, 255 = white). */
+  /** True when the page is RGB color (use `rgb`); false for grayscale (`gray`). */
+  isColor: boolean;
+  /** width*height grayscale samples (0 = black, 255 = white). Empty when color. */
   gray: Uint8Array;
+  /** width*height*3 RGB samples (R,G,B per pixel). Empty when grayscale. */
+  rgb: Uint8Array;
 }
 
 // ── PWG Raster (cups_page_header2_s) field layout ─────────────────────────
@@ -84,7 +102,11 @@ const COLORSPACE_CMYK = 6; // CUPS_CSPACE_CMYK (4 samples: C, M, Y, K)
 // (CUPS_CSPACE_K = 3.) Additive gray (W=0, sGray=18) is the opposite: 0 = black.
 const COLORSPACE_BLACK = 3;
 
-/** How a decoded color value (RLE unit) maps to gray pixel sample(s). */
+/**
+ * How a decoded color value (RLE unit) maps to output pixel sample(s). Most
+ * kinds emit one (or several, for 1-bit) gray samples; `Rgb`/`Rgb16` emit three
+ * RGB samples into a color buffer.
+ */
 const enum PixelKind {
   /** 8-bit additive gray: byte passes through (0 = black). */
   Gray8,
@@ -96,15 +118,23 @@ const enum PixelKind {
   Black1,
   /** 16-bit big-endian gray: take the high byte. */
   Gray16,
-  /** 24-bit RGB → Rec.601 luma. */
+  /** 24-bit RGB (8-bit channels): preserved as RGB. */
   Rgb,
-  /** 32-bit CMYK → RGB → Rec.601 luma. */
+  /** 48-bit RGB (16-bit big-endian channels): high byte per channel. */
+  Rgb16,
+  /** 32-bit CMYK → RGB → Rec.601 luma (kept grayscale). */
   Cmyk,
 }
 
+/** RGB color kinds emit into the `rgb` (3 bytes/pixel) buffer. */
+function isColorKind(kind: PixelKind): boolean {
+  return kind === PixelKind.Rgb || kind === PixelKind.Rgb16;
+}
+
 /**
- * Decode every page of a PWG-Raster or URF document to grayscale pixel
- * buffers. Returns undefined when the bytes are neither format. Never throws.
+ * Decode every page of a PWG-Raster or URF document to pixel buffers (grayscale
+ * or RGB per `isColor`). Returns undefined when the bytes are neither format.
+ * Never throws.
  */
 export function decodeRasterPages(
   bytes: Buffer
@@ -155,7 +185,9 @@ function decodePwg(bytes: Buffer): DecodedRasterPage[] {
       widthPx,
       heightPx,
       dpi: averageDpi(dpiX, dpiY),
+      isColor: result.isColor,
       gray: result.gray,
+      rgb: result.rgb,
     });
     if (result.next === undefined) break; // truncated/garbage — stop cleanly
     pos = result.next;
@@ -195,7 +227,9 @@ function decodeUrf(bytes: Buffer): DecodedRasterPage[] {
       widthPx,
       heightPx,
       dpi,
+      isColor: result.isColor,
       gray: result.gray,
+      rgb: result.rgb,
     });
     if (result.next === undefined) break;
     pos = result.next;
@@ -216,8 +250,18 @@ interface PageGeometry {
 }
 
 interface DecodeResult {
-  /** width*height grayscale buffer (padded with 0 where data was missing). */
+  /** True when this page decoded as RGB color (use `rgb`); else use `gray`. */
+  isColor: boolean;
+  /**
+   * width*height grayscale buffer (padded with 0 where data was missing).
+   * Empty (length 0) when the page is color.
+   */
   gray: Uint8Array;
+  /**
+   * width*height*3 RGB buffer (padded with 0 where data was missing).
+   * Empty (length 0) when the page is grayscale.
+   */
+  rgb: Uint8Array;
   /** Offset just past this page's line data, or undefined if truncated. */
   next: number | undefined;
 }
@@ -254,14 +298,23 @@ function resolveGeometry(
   }
   if (groupBytes <= 0) groupBytes = 1;
 
+  const rgbColorSpace = COLORSPACE_RGB_LIKE.has(colorSpace);
+  // 48-bit RGB: an RGB colorSpace with 16-bit channels (6 bytes/pixel), or a
+  // 6-byte value whose half is 3 (i.e. three 16-bit channels).
+  const isRgb16 =
+    (rgbColorSpace && bitsPerColor === 16) ||
+    (groupBytes === 6 && rgbColorSpace);
   const isRgb =
-    COLORSPACE_RGB_LIKE.has(colorSpace) ||
-    // Heuristic backstop: 3 device bytes with 8-bit channels ⇒ RGB.
-    (groupBytes >= 3 && (bitsPerColor === 0 || bitsPerColor === 8));
+    !isRgb16 &&
+    (rgbColorSpace ||
+      // Heuristic backstop: 3 device bytes with 8-bit channels ⇒ RGB.
+      (groupBytes === 3 && (bitsPerColor === 0 || bitsPerColor === 8)));
 
   let kind: PixelKind;
   if (colorSpace === COLORSPACE_CMYK || groupBytes === 4) {
     kind = PixelKind.Cmyk;
+  } else if (isRgb16) {
+    kind = PixelKind.Rgb16;
   } else if (isRgb) {
     kind = PixelKind.Rgb;
   } else if (bitsPerColor === 16 || groupBytes === 2) {
@@ -283,6 +336,10 @@ function urfGeometry(bpp: number): PageGeometry {
   if (bpp <= 1) {
     return { groupBytes: 1, pixelsPerGroup: 8, kind: PixelKind.Gray1 };
   }
+  if (bpp >= 48) {
+    // 48-bit ⇒ three 16-bit RGB channels (URF color is RGB, not CMYK).
+    return { groupBytes: 6, pixelsPerGroup: 1, kind: PixelKind.Rgb16 };
+  }
   if (bpp >= 32) {
     return { groupBytes: 4, pixelsPerGroup: 1, kind: PixelKind.Cmyk };
   }
@@ -296,9 +353,14 @@ function urfGeometry(bpp: number): PageGeometry {
 }
 
 /**
- * Decode one page's line stream into a grayscale buffer. Returns the decoded
- * pixels plus the offset of the next page header (or undefined on truncation).
- * Degenerate geometry yields an empty buffer and a stop signal.
+ * Decode one page's line stream into a gray or RGB buffer (per `geom.kind`).
+ * Returns the decoded pixels plus the offset of the next page header (or
+ * undefined on truncation). Degenerate geometry yields an empty buffer and a
+ * stop signal.
+ *
+ * Color and grayscale share one walk: the per-row cursor counts *pixels*, and
+ * `expandGroup` writes either 1 gray byte or 3 RGB bytes per pixel into the
+ * row's stride (`samplesPerPixel`).
  */
 function decodePage(
   bytes: Buffer,
@@ -307,12 +369,21 @@ function decodePage(
   height: number,
   geom: PageGeometry
 ): DecodeResult {
+  const isColor = isColorKind(geom.kind);
+  const empty = new Uint8Array(0);
   if (width <= 0 || height <= 0) {
-    return { gray: new Uint8Array(0), next: undefined };
+    return { isColor, gray: empty, rgb: empty, next: undefined };
   }
 
-  const gray = new Uint8Array(width * height);
+  const samplesPerPixel = isColor ? 3 : 1;
+  const out = new Uint8Array(width * height * samplesPerPixel);
+  const result = (next: number | undefined): DecodeResult =>
+    isColor
+      ? { isColor: true, gray: empty, rgb: out, next }
+      : { isColor: false, gray: out, rgb: empty, next };
+
   const { groupBytes, pixelsPerGroup, kind } = geom;
+  const rowStride = width * samplesPerPixel;
   // Each line is this many RLE color values (1 per pixel, or ceil(width/8) for
   // 1-bit packing). Trailing padding pixels in the last group are clamped off.
   const groupsPerRow = Math.ceil(width / pixelsPerGroup);
@@ -320,16 +391,16 @@ function decodePage(
   let line = 0;
 
   while (line < height) {
-    if (p >= bytes.length) return { gray, next: undefined };
+    if (p >= bytes.length) return result(undefined);
     const lineRepeat = bytes[p] + 1; // stored as count-1
     p += 1;
 
     // Decode exactly `groupsPerRow` color values for this line into a row.
-    const row = new Uint8Array(width);
+    const row = new Uint8Array(rowStride);
     let groups = 0; // color values consumed
-    let pixels = 0; // gray pixels written
+    let pixels = 0; // pixels written
     while (groups < groupsPerRow) {
-      if (p >= bytes.length) return { gray, next: undefined };
+      if (p >= bytes.length) return result(undefined);
       const control = bytes[p];
       p += 1;
 
@@ -338,7 +409,7 @@ function decodePage(
         const run = control + 1;
         for (let i = 0; i < run && groups < groupsPerRow; i++, groups++) {
           if (p + groupBytes > bytes.length) {
-            return { gray, next: undefined };
+            return result(undefined);
           }
           pixels = expandGroup(bytes, p, kind, row, pixels, width);
           p += groupBytes;
@@ -347,7 +418,7 @@ function decodePage(
         // Repeat: one color value repeated (257-control) times.
         const run = 257 - control;
         if (p + groupBytes > bytes.length) {
-          return { gray, next: undefined };
+          return result(undefined);
         }
         for (let i = 0; i < run && groups < groupsPerRow; i++, groups++) {
           pixels = expandGroup(bytes, p, kind, row, pixels, width);
@@ -358,19 +429,21 @@ function decodePage(
 
     // Emit this row `lineRepeat` times (clamped to the page height).
     for (let r = 0; r < lineRepeat && line < height; r++, line++) {
-      gray.set(row, line * width);
+      out.set(row, line * rowStride);
     }
   }
 
-  return { gray, next: p };
+  return result(p);
 }
 
 /**
- * Expand one color value at `off` into 1+ gray pixels written into `row`
- * starting at cursor `pixels`, clamped at `width`. Returns the advanced cursor.
+ * Expand one color value at `off` into 1+ pixels written into `row` starting at
+ * pixel cursor `pixels`, clamped at `width`. Returns the advanced pixel cursor.
  *
- * Most kinds yield one pixel; 1-bit kinds unpack up to 8 pixels (MSB-first)
- * from the single byte, the last group's trailing bits clamped off by `width`.
+ * Grayscale kinds write one byte per pixel; RGB kinds (`Rgb`/`Rgb16`) write
+ * three bytes per pixel at `pixels * 3`. 1-bit kinds unpack up to 8 pixels
+ * (MSB-first) from the single byte, the last group's trailing bits clamped off
+ * by `width`.
  */
 function expandGroup(
   bytes: Buffer,
@@ -398,11 +471,20 @@ function expandGroup(
       row[pixels++] = bytes[off] ?? 0;
       return pixels;
     case PixelKind.Rgb: {
-      const r = bytes[off] ?? 0;
-      const g = bytes[off + 1] ?? 0;
-      const b = bytes[off + 2] ?? 0;
-      row[pixels++] = luma601(r, g, b);
-      return pixels;
+      // 8-bit RGB preserved as-is into the 3-byte-per-pixel row.
+      const o = pixels * 3;
+      row[o] = bytes[off] ?? 0;
+      row[o + 1] = bytes[off + 1] ?? 0;
+      row[o + 2] = bytes[off + 2] ?? 0;
+      return pixels + 1;
+    }
+    case PixelKind.Rgb16: {
+      // 48-bit RGB (16-bit big-endian channels): high byte of each channel.
+      const o = pixels * 3;
+      row[o] = bytes[off] ?? 0;
+      row[o + 1] = bytes[off + 2] ?? 0;
+      row[o + 2] = bytes[off + 4] ?? 0;
+      return pixels + 1;
     }
     case PixelKind.Cmyk: {
       // CMYK (8-bit subtractive) → RGB → Rec.601 luma.
