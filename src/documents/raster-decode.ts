@@ -38,11 +38,13 @@
  *     RGB. → `rgb` (3 bytes/pixel), `isColor` true.
  *   - 48-bit RGB (16-bit channels): take the high byte of each of R,G,B.
  *     → `rgb`, `isColor` true.
- *   - CMYK (4 bytes, 8-bit channels): converted to grayscale luma, *not* RGB.
- *     Color print jobs in the wild arrive as RGB; CMYK in this emulator only
- *     ever appeared as a luma backstop, so it stays gray to keep the page's
- *     visual output (and existing tests) stable. Conversion: RGB via
- *     R=255*(1-C/255)*(1-K/255) (and G,B) then Rec.601 luma. → `gray`.
+ *   - CMYK (4 bytes, 8-bit channels): converted to RGB color (not grayscale)
+ *     so CMYK jobs render in color. Conversion is the naive subtractive model
+ *     R=255*(1-C/255)*(1-K/255) (and G from M, B from Y), 3 bytes/pixel.
+ *     → `rgb` (3 bytes/pixel), `isColor` true. No ICC/colorimetric profile is
+ *     applied.
+ *   - 64-bit CMYK (16-bit channels): take the high byte of each of C,M,Y,K
+ *     first, then the same CMYK→RGB conversion. → `rgb`, `isColor` true.
  *
  * Robustness: truncated or malformed input never throws. Whatever rows/pixels
  * could be decoded are kept; the rest of the page is left as padding (0) and
@@ -50,10 +52,11 @@
  */
 
 /**
- * A decoded page. Pixels are row-major. Grayscale/black/CMYK sources carry
- * `gray` (1 byte/pixel) with `isColor` false; RGB color spaces carry `rgb`
- * (3 bytes/pixel, R,G,B) with `isColor` true. Exactly one buffer is populated
- * per page; the other is an empty `Uint8Array(0)`.
+ * A decoded page. Pixels are row-major. Grayscale/black sources carry
+ * `gray` (1 byte/pixel) with `isColor` false; RGB and CMYK color spaces carry
+ * `rgb` (3 bytes/pixel, R,G,B) with `isColor` true (CMYK is converted to RGB).
+ * Exactly one buffer is populated per page; the other is an empty
+ * `Uint8Array(0)`.
  */
 export interface DecodedRasterPage {
   widthPx: number;
@@ -104,8 +107,8 @@ const COLORSPACE_BLACK = 3;
 
 /**
  * How a decoded color value (RLE unit) maps to output pixel sample(s). Most
- * kinds emit one (or several, for 1-bit) gray samples; `Rgb`/`Rgb16` emit three
- * RGB samples into a color buffer.
+ * kinds emit one (or several, for 1-bit) gray samples; the color kinds
+ * (`Rgb`/`Rgb16`/`Cmyk`/`Cmyk16`) emit three RGB samples into a color buffer.
  */
 const enum PixelKind {
   /** 8-bit additive gray: byte passes through (0 = black). */
@@ -122,13 +125,20 @@ const enum PixelKind {
   Rgb,
   /** 48-bit RGB (16-bit big-endian channels): high byte per channel. */
   Rgb16,
-  /** 32-bit CMYK → RGB → Rec.601 luma (kept grayscale). */
+  /** 32-bit CMYK (8-bit channels) → RGB color (3 bytes/pixel). */
   Cmyk,
+  /** 64-bit CMYK (16-bit big-endian channels): high byte per channel → RGB. */
+  Cmyk16,
 }
 
-/** RGB color kinds emit into the `rgb` (3 bytes/pixel) buffer. */
+/** Color kinds emit into the `rgb` (3 bytes/pixel) buffer. */
 function isColorKind(kind: PixelKind): boolean {
-  return kind === PixelKind.Rgb || kind === PixelKind.Rgb16;
+  return (
+    kind === PixelKind.Rgb ||
+    kind === PixelKind.Rgb16 ||
+    kind === PixelKind.Cmyk ||
+    kind === PixelKind.Cmyk16
+  );
 }
 
 /**
@@ -310,9 +320,16 @@ function resolveGeometry(
       // Heuristic backstop: 3 device bytes with 8-bit channels ⇒ RGB.
       (groupBytes === 3 && (bitsPerColor === 0 || bitsPerColor === 8)));
 
+  // CMYK: 8-bit channels = 4 bytes/pixel; 16-bit channels = 8 bytes/pixel.
+  const isCmyk =
+    colorSpace === COLORSPACE_CMYK || groupBytes === 4 || groupBytes === 8;
+
   let kind: PixelKind;
-  if (colorSpace === COLORSPACE_CMYK || groupBytes === 4) {
-    kind = PixelKind.Cmyk;
+  if (isCmyk) {
+    kind =
+      bitsPerColor === 16 || groupBytes === 8
+        ? PixelKind.Cmyk16
+        : PixelKind.Cmyk;
   } else if (isRgb16) {
     kind = PixelKind.Rgb16;
   } else if (isRgb) {
@@ -487,18 +504,30 @@ function expandGroup(
       return pixels + 1;
     }
     case PixelKind.Cmyk: {
-      // CMYK (8-bit subtractive) → RGB → Rec.601 luma.
-      // R = 255*(1-C/255)*(1-K/255); G,B analogously.
-      const c = bytes[off] ?? 0;
-      const m = bytes[off + 1] ?? 0;
-      const y = bytes[off + 2] ?? 0;
-      const k = bytes[off + 3] ?? 0;
-      const kf = 1 - k / 255;
-      const r = 255 * (1 - c / 255) * kf;
-      const g = 255 * (1 - m / 255) * kf;
-      const b = 255 * (1 - y / 255) * kf;
-      row[pixels++] = luma601(r, g, b);
-      return pixels;
+      // CMYK (8-bit subtractive) → RGB color (3 bytes/pixel).
+      // R = 255*(1-C/255)*(1-K/255); G from M, B from Y.
+      cmykToRgb(
+        bytes[off] ?? 0,
+        bytes[off + 1] ?? 0,
+        bytes[off + 2] ?? 0,
+        bytes[off + 3] ?? 0,
+        row,
+        pixels * 3
+      );
+      return pixels + 1;
+    }
+    case PixelKind.Cmyk16: {
+      // 64-bit CMYK (16-bit big-endian channels): high byte of each channel
+      // first, then the same CMYK→RGB conversion.
+      cmykToRgb(
+        bytes[off] ?? 0,
+        bytes[off + 2] ?? 0,
+        bytes[off + 4] ?? 0,
+        bytes[off + 6] ?? 0,
+        row,
+        pixels * 3
+      );
+      return pixels + 1;
     }
     case PixelKind.Black8:
       // Subtractive black: byte = ink amount, so invert (0 ink = white).
@@ -511,9 +540,23 @@ function expandGroup(
   }
 }
 
-/** Rec.601 luma of RGB (each 0..255, may be fractional) → 0..255 byte. */
-function luma601(r: number, g: number, b: number): number {
-  return Math.round(0.299 * r + 0.587 * g + 0.114 * b) & 0xff;
+/**
+ * Convert one 8-bit CMYK pixel (C,M,Y,K each 0..255) to RGB, writing 3 bytes
+ * (R,G,B) into `row` at byte offset `o`. Naive subtractive model, no ICC:
+ * R = round(255*(1-C/255)*(1-K/255)); G from M; B from Y.
+ */
+function cmykToRgb(
+  c: number,
+  m: number,
+  y: number,
+  k: number,
+  row: Uint8Array,
+  o: number
+): void {
+  const kf = 1 - k / 255;
+  row[o] = Math.round(255 * (1 - c / 255) * kf) & 0xff;
+  row[o + 1] = Math.round(255 * (1 - m / 255) * kf) & 0xff;
+  row[o + 2] = Math.round(255 * (1 - y / 255) * kf) & 0xff;
 }
 
 // ── Helpers (bounds-safe; never throw) ────────────────────────────────────
