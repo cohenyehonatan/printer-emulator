@@ -11,6 +11,7 @@
 import { EventEmitter } from 'events';
 import { Logger } from '../logging/logger.js';
 import { JobQueue } from './job-queue.js';
+import { JobState } from './states.js';
 import {
   DEFAULT_IDENTITY,
   type PrinterIdentity,
@@ -112,8 +113,23 @@ export class IppPrinter extends EventEmitter {
     return {
       identity: this.identity,
       queue: this.queue,
-      printerState: () => this.state,
+      printerState: () => this.liveState(),
     };
+  }
+
+  /**
+   * Derive printer-state from job activity, per RFC 8011: `processing` while a
+   * job is actively printing, `stopped` if a job is processing-stopped, else
+   * `idle`. Merely answering a query is NOT `processing` — that distinction is
+   * what a real IPP/AirPrint client (e.g. ipptool, CUPS) expects.
+   */
+  private liveState(): PrinterStateValue {
+    let stopped = false;
+    for (const job of this.queue.list()) {
+      if (job.state === JobState.PROCESSING) return PrinterStates.PROCESSING;
+      if (job.state === JobState.PROCESSING_STOPPED) stopped = true;
+    }
+    return stopped ? PrinterStates.STOPPED : this.state;
   }
 
   /**
@@ -123,7 +139,6 @@ export class IppPrinter extends EventEmitter {
    */
   handleRequest(body: Buffer): Buffer {
     let response: IppResponse;
-    this.state = PrinterStates.PROCESSING;
     try {
       const request = decode(body);
       this.logger.protocol(
@@ -136,8 +151,6 @@ export class IppPrinter extends EventEmitter {
     } catch (err) {
       this.logger.error(`Failed to decode IPP request: ${(err as Error).message}`);
       response = badRequest();
-    } finally {
-      this.state = PrinterStates.IDLE;
     }
 
     this.logger.protocol(
