@@ -35,6 +35,9 @@ import { handleValidateJob } from './operations/validate-job.js';
 import { handleGetJobs } from './operations/get-jobs.js';
 import { handleGetJobAttributes } from './operations/get-job-attributes.js';
 import { handleCancelJob } from './operations/cancel-job.js';
+import { handleCreateJob } from './operations/create-job.js';
+import { handleSendDocument } from './operations/send-document.js';
+import { handleCloseJob } from './operations/close-job.js';
 
 /** Shared context passed to every operation handler. */
 export interface OperationContext {
@@ -56,6 +59,9 @@ const HANDLERS: Record<number, OperationHandler> = {
   [OperationIds.GET_JOBS]: handleGetJobs,
   [OperationIds.GET_JOB_ATTRIBUTES]: handleGetJobAttributes,
   [OperationIds.CANCEL_JOB]: handleCancelJob,
+  [OperationIds.CREATE_JOB]: handleCreateJob,
+  [OperationIds.SEND_DOCUMENT]: handleSendDocument,
+  [OperationIds.CLOSE_JOB]: handleCloseJob,
 };
 
 /** Dispatch a decoded IPP request to its handler and return the response. */
