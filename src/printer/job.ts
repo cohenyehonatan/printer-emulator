@@ -17,7 +17,23 @@
 
 import { JobStateMachine } from './state-machine.js';
 import { JobState, JobEvent, jobStateToValue } from './states.js';
-import { JobHoldUntil, type JobStateValue } from '../ipp/constants.js';
+import {
+  JobHoldUntil,
+  type JobStateValue,
+  type PrintColorModeValue,
+  type PrintQualityValue,
+  type SidesValue,
+  type OrientationRequestedValue,
+  type MediaValue,
+} from '../ipp/constants.js';
+import {
+  normalizeColorMode,
+  normalizeQuality,
+  normalizeSides,
+  normalizeOrientation,
+  normalizeMedia,
+  type JobTemplate,
+} from '../ipp/job-template.js';
 import { holdUntilHolds } from '../ipp/hold-until.js';
 import type { Document } from '../documents/document.js';
 
@@ -33,6 +49,11 @@ export const JOB_SETTABLE_ATTRIBUTES = [
   'job-priority',
   'copies',
   'job-hold-until',
+  'print-color-mode',
+  'print-quality',
+  'sides',
+  'orientation-requested',
+  'media',
 ] as const;
 
 export interface JobInit {
@@ -66,6 +87,15 @@ export interface JobInit {
    * the keyword→hold policy.
    */
   holdUntil?: string;
+  /**
+   * The common print Job Template attributes the client supplied on
+   * Print-Job/Create-Job (`print-color-mode`, `print-quality`, `sides`,
+   * `orientation-requested`, `media`). Already normalized to the advertised
+   * value set (unknown/invalid values arrive as undefined). Stored verbatim so
+   * Get-Job-Attributes can echo them and the render path can honor
+   * `print-color-mode`. See ipp/job-template.ts.
+   */
+  template?: JobTemplate;
 }
 
 export class Job {
@@ -93,6 +123,21 @@ export class Job {
    */
   private _holdUntil: string | undefined;
   /**
+   * The common print Job Template attributes (`print-color-mode`,
+   * `print-quality`, `sides`, `orientation-requested`, `media`) — RFC 8011 §5.2
+   * / PWG 5100.13. Each is `undefined` until the client supplies a recognized
+   * value (on Print-Job/Create-Job or via Set-Job-Attributes), so the default
+   * job-attribute set stays unchanged for jobs that never carried them; the
+   * `*-default` advertised by the printer is the effective value otherwise.
+   * `print-color-mode` is the one that actually changes output: `monochrome`
+   * forces a grayscale raster (see raster-render.ts).
+   */
+  private _printColorMode: PrintColorModeValue | undefined;
+  private _printQuality: PrintQualityValue | undefined;
+  private _sides: SidesValue | undefined;
+  private _orientation: OrientationRequestedValue | undefined;
+  private _media: MediaValue | undefined;
+  /**
    * Number of times this job has run to `completed`. Starts at 0 and increments
    * each time process() reaches COMPLETE. A Restart-Job (§4.3.7) re-queues a
    * terminal job and runs it again, so a second completion bumps this to 2 —
@@ -110,6 +155,11 @@ export class Job {
     this.createdAt = new Date();
     this._open = init.open ?? false;
     this._holdUntil = init.holdUntil;
+    this._printColorMode = init.template?.printColorMode;
+    this._printQuality = init.template?.printQuality;
+    this._sides = init.template?.sides;
+    this._orientation = init.template?.orientation;
+    this._media = init.template?.media;
 
     if (init.document) {
       this._documents.push(init.document);
@@ -221,6 +271,69 @@ export class Job {
   setCopies(value: number | undefined): void {
     if (value === undefined || !Number.isFinite(value) || value < 1) return;
     this._copies = Math.trunc(value);
+  }
+
+  /**
+   * The job's requested `print-color-mode` (`color`/`monochrome`/`auto`), or
+   * undefined when the client never set one. `monochrome` forces grayscale
+   * output even for color input (see raster-render.ts). Echoed once set.
+   */
+  get printColorMode(): PrintColorModeValue | undefined {
+    return this._printColorMode;
+  }
+
+  /**
+   * Set the job's `print-color-mode`. An unrecognized keyword is ignored (the
+   * field keeps its prior/default value) so a malformed write never corrupts
+   * the render decision.
+   */
+  setPrintColorMode(value: string | undefined): void {
+    const normalized = normalizeColorMode(value);
+    if (normalized !== undefined) this._printColorMode = normalized;
+  }
+
+  /** The job's requested `print-quality` (3/4/5), or undefined when unset. */
+  get printQuality(): PrintQualityValue | undefined {
+    return this._printQuality;
+  }
+
+  /** Set the job's `print-quality` (draft/normal/high); ignored if invalid. */
+  setPrintQuality(value: number | undefined): void {
+    const normalized = normalizeQuality(value);
+    if (normalized !== undefined) this._printQuality = normalized;
+  }
+
+  /** The job's requested `sides`, or undefined when unset. */
+  get sides(): SidesValue | undefined {
+    return this._sides;
+  }
+
+  /** Set the job's `sides`; an unadvertised keyword is ignored. */
+  setSides(value: string | undefined): void {
+    const normalized = normalizeSides(value);
+    if (normalized !== undefined) this._sides = normalized;
+  }
+
+  /** The job's requested `orientation-requested` (3–6), or undefined when unset. */
+  get orientation(): OrientationRequestedValue | undefined {
+    return this._orientation;
+  }
+
+  /** Set the job's `orientation-requested`; out-of-range values are ignored. */
+  setOrientation(value: number | undefined): void {
+    const normalized = normalizeOrientation(value);
+    if (normalized !== undefined) this._orientation = normalized;
+  }
+
+  /** The job's requested `media`, or undefined when unset. */
+  get media(): MediaValue | undefined {
+    return this._media;
+  }
+
+  /** Set the job's `media`; an unadvertised size keyword is ignored. */
+  setMedia(value: string | undefined): void {
+    const normalized = normalizeMedia(value);
+    if (normalized !== undefined) this._media = normalized;
   }
 
   /**

@@ -35,6 +35,14 @@ export function enumAttr(name: string, value: number): IppAttribute {
   return { name, values: [{ tag: ValueTags.ENUM, value }] };
 }
 
+/** 1setOf enum (e.g. `print-quality-supported`, `operations-supported`). */
+export function enumsAttr(name: string, ...values: number[]): IppAttribute {
+  return {
+    name,
+    values: values.map((value) => ({ tag: ValueTags.ENUM, value })),
+  };
+}
+
 /** 1setOf integer (e.g. Cancel-My-Jobs `job-ids`). */
 export function integersAttr(name: string, ...values: number[]): IppAttribute {
   return {

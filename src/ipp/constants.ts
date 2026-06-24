@@ -135,6 +135,86 @@ export type JobHoldUntilValue =
 /** Default `job-hold-until` when a client omits it: do not hold. */
 export const JOB_HOLD_UNTIL_DEFAULT = JobHoldUntil.NO_HOLD;
 
+// ── print-color-mode keyword values — PWG 5100.13 §6.6 ────────────────────
+/**
+ * `print-color-mode` (type2 keyword) tells the printer whether to render in
+ * color, force grayscale, or decide automatically. `monochrome` forces a
+ * grayscale raster even for a color source (the emulator converts color pixels
+ * to luma — see raster-render.ts); `color`/`auto` keep the source's own color.
+ * Advertised via `print-color-mode-supported`; default is `auto`.
+ */
+export const PrintColorMode = {
+  AUTO: 'auto',
+  COLOR: 'color',
+  MONOCHROME: 'monochrome',
+} as const;
+
+export type PrintColorModeValue =
+  (typeof PrintColorMode)[keyof typeof PrintColorMode];
+
+/** Default `print-color-mode` when a client omits it: decide automatically. */
+export const PRINT_COLOR_MODE_DEFAULT = PrintColorMode.AUTO;
+
+// ── print-quality enum values — RFC 8011 §5.2.13 ──────────────────────────
+/** `print-quality` (type2 enum): draft (3), normal (4), high (5). */
+export const PrintQuality = {
+  DRAFT: 3,
+  NORMAL: 4,
+  HIGH: 5,
+} as const;
+
+export type PrintQualityValue =
+  (typeof PrintQuality)[keyof typeof PrintQuality];
+
+/** Default `print-quality` when a client omits it: normal. */
+export const PRINT_QUALITY_DEFAULT = PrintQuality.NORMAL;
+
+// ── sides keyword values — RFC 8011 §5.2.8 ────────────────────────────────
+/** `sides` (type2 keyword): single- or double-sided binding edges. */
+export const Sides = {
+  ONE_SIDED: 'one-sided',
+  TWO_SIDED_LONG_EDGE: 'two-sided-long-edge',
+  TWO_SIDED_SHORT_EDGE: 'two-sided-short-edge',
+} as const;
+
+export type SidesValue = (typeof Sides)[keyof typeof Sides];
+
+/** Default `sides` when a client omits it: one-sided. */
+export const SIDES_DEFAULT = Sides.ONE_SIDED;
+
+// ── orientation-requested enum values — RFC 8011 §5.2.10 ──────────────────
+/**
+ * `orientation-requested` (type2 enum): portrait (3), landscape (4),
+ * reverse-landscape (5), reverse-portrait (6).
+ */
+export const OrientationRequested = {
+  PORTRAIT: 3,
+  LANDSCAPE: 4,
+  REVERSE_LANDSCAPE: 5,
+  REVERSE_PORTRAIT: 6,
+} as const;
+
+export type OrientationRequestedValue =
+  (typeof OrientationRequested)[keyof typeof OrientationRequested];
+
+/** Default `orientation-requested` when a client omits it: portrait. */
+export const ORIENTATION_REQUESTED_DEFAULT = OrientationRequested.PORTRAIT;
+
+// ── media keyword values (PWG self-describing media size names) ────────────
+/**
+ * The two `media` (type2 keyword) sizes this emulator advertises. PWG 5101.1
+ * self-describing names; ISO A4 is the default, US Letter the alternative.
+ */
+export const Media = {
+  ISO_A4: 'iso_a4_210x297mm',
+  NA_LETTER: 'na_letter_8.5x11in',
+} as const;
+
+export type MediaValue = (typeof Media)[keyof typeof Media];
+
+/** Default `media` when a client omits it: ISO A4 (matches `media-default`). */
+export const MEDIA_DEFAULT = Media.ISO_A4;
+
 // ── Charset / natural language defaults ───────────────────────────────────
 export const DEFAULT_CHARSET = 'utf-8';
 export const DEFAULT_NATURAL_LANGUAGE = 'en';
