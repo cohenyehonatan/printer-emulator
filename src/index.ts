@@ -13,6 +13,10 @@
  * Port note: DEFAULT_PORT is 631 (the IANA IPP port used by CUPS/AirPrint),
  * but binding it needs privileges. The demo defaults to DEMO_PORT (6310) to
  * avoid sudo; override either with the PORT env var.
+ *
+ * Raster output: pass `--raster-out <prefix>` (or set `RASTER_OUT=<prefix>`) to
+ * have completed PWG/URF jobs decode + write one PNG per page as
+ * `<prefix>-job<id>-p<n>.png`. Off by default (no output side effects).
  */
 
 import { IppPrinter } from './printer/ipp-printer.js';
@@ -29,6 +33,21 @@ function resolvePort(fallback: number): number {
   return parseInt(process.env.PORT ?? String(fallback), 10);
 }
 
+/**
+ * Resolve the opt-in raster output prefix from `--raster-out <prefix>` (CLI) or
+ * the `RASTER_OUT` env var (CLI wins). Returns undefined when neither is set,
+ * keeping PNG rendering off by default. When enabled, completed PWG/URF jobs
+ * write one PNG per page as `<prefix>-job<id>-p<n>.png`.
+ */
+function resolveRasterOut(): string | undefined {
+  const flagIndex = process.argv.indexOf('--raster-out');
+  if (flagIndex !== -1) {
+    const value = process.argv[flagIndex + 1];
+    if (value && !value.startsWith('--')) return value;
+  }
+  return process.env.RASTER_OUT || undefined;
+}
+
 async function runDemo(): Promise<void> {
   logger.section('IPP / AirPrint Printer Emulator Demo');
 
@@ -36,7 +55,12 @@ async function runDemo(): Promise<void> {
 
   // Start the emulated IPP printer. mDNS advertising is disabled for the
   // in-process demo so it doesn't leave a multicast socket open and hang exit.
-  const printer = new IppPrinter({ port, logLevel: 'info', advertise: false });
+  const printer = new IppPrinter({
+    port,
+    logLevel: 'info',
+    advertise: false,
+    rasterOut: resolveRasterOut(),
+  });
   await printer.start();
 
   // Give the server a moment to be ready.
@@ -69,9 +93,13 @@ async function runDemo(): Promise<void> {
 
 async function startEmulator(): Promise<void> {
   const port = resolvePort(DEFAULT_PORT);
-  const printer = new IppPrinter({ port, logLevel: 'debug' });
+  const rasterOut = resolveRasterOut();
+  const printer = new IppPrinter({ port, logLevel: 'debug', rasterOut });
   await printer.start();
 
+  if (rasterOut) {
+    logger.info('Raster PNG output enabled', { prefix: rasterOut });
+  }
   logger.info('IPP printer running. Press Ctrl+C to stop.');
 
   process.on('SIGINT', async () => {

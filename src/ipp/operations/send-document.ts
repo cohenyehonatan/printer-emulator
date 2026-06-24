@@ -97,6 +97,9 @@ export function handleSendDocument(
   const lastDocument = firstBoolean(findAttr(opAttrs, 'last-document')) ?? false;
   if (lastDocument) {
     job.close();
+    // The closed job has run to completion: render its raster pages (if any
+    // output target is configured). Covers every accumulated document.
+    ctx.renderRaster?.(job);
   }
 
   const jobUri = `${ctx.identity.uri}/jobs/${job.id}`;

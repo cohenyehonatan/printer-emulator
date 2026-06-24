@@ -29,11 +29,19 @@ import {
   type PrinterStateValue,
 } from '../ipp/constants.js';
 import type { IppResponse } from '../ipp/message.js';
+import type { Job } from './job.js';
+import { renderRasterJob } from '../documents/raster-render.js';
 
 export interface IppPrinterConfig {
   port: number;
   identity?: Partial<PrinterIdentity>;
   logLevel?: 'debug' | 'info' | 'warn' | 'error';
+  /**
+   * Opt-in raster output: a filesystem path prefix. When set, completed
+   * PWG/URF jobs are decoded and one PNG is written per page as
+   * `<prefix>-job<id>-p<n>.png`. Off by default (no rendering side effects).
+   */
+  rasterOut?: string;
   /**
    * Advertise the printer over mDNS/DNS-SD (AirPrint discovery). Defaults to
    * true; tests/CI and in-process demos set it false to avoid leaving a
@@ -114,7 +122,20 @@ export class IppPrinter extends EventEmitter {
       identity: this.identity,
       queue: this.queue,
       printerState: () => this.liveState(),
+      renderRaster: this.config.rasterOut
+        ? (job: Job) => this.renderRaster(job)
+        : undefined,
     };
+  }
+
+  /**
+   * Render a finished job's PWG/URF pages to PNGs under the configured
+   * `rasterOut` prefix. Non-raster jobs produce nothing. Never throws.
+   */
+  private renderRaster(job: Job): void {
+    const prefix = this.config.rasterOut;
+    if (!prefix) return;
+    renderRasterJob(job.documents, job.id, prefix, this.logger);
   }
 
   /**

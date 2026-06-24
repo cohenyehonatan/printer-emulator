@@ -67,6 +67,10 @@ export function handleCloseJob(
     return errorResponse(request, StatusCodes.CLIENT_ERROR_NOT_POSSIBLE);
   }
 
+  // The closed job has run to completion: render its raster pages when an
+  // output target is configured (no-op for empty/non-raster jobs).
+  ctx.renderRaster?.(job);
+
   const jobUri = `${ctx.identity.uri}/jobs/${job.id}`;
 
   return {

@@ -78,6 +78,9 @@ export function handlePrintJob(
   // Emulated print: immediately drive the job to completion.
   job.process();
 
+  // "Actually print": render PWG/URF pages to PNGs when output is configured.
+  ctx.renderRaster?.(job);
+
   const jobUri = `${ctx.identity.uri}/jobs/${job.id}`;
 
   return {

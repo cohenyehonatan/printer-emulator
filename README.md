@@ -141,8 +141,26 @@ npx tsx src/index.ts scenario   # run the scenarios
   and reading each page's pixel width/height + resolution; the PackBits line
   stream is consumed only enough to skip between page headers. Print-Job uses
   the parsed page count to populate `job-impressions`/`job-impressions-completed`
-  for raster jobs. Rendering the actual raster pixels is still out of scope
-  (header parse only).
+  for raster jobs.
+- **PWG-Raster / Apple-URF pixel rendering** — `documents/raster-decode.ts`
+  decodes each page's PackBits line stream (line-repeat byte + literal/repeat
+  control runs) into real pixels, sized from the page header's
+  cupsWidth/Height/BytesPerLine/bitsPerPixel/colorSpace. 8-bit grayscale (`sGray`
+  / device-gray) passes through; sRGB24 / device-RGB is down-converted to Rec.601
+  luma. `utils/png.ts` then writes an 8-bit-grayscale PNG (signature + IHDR +
+  deflated IDAT scanlines + IEND, each chunk CRC-32'd) using only Node's built-in
+  `zlib` — no image dependencies. Rendering is **opt-in**: set the `RASTER_OUT`
+  env var or pass `--raster-out <prefix>` on the emulator/demo, and a completed
+  PWG/URF job writes one PNG per page as `<prefix>-job<id>-p<n>.png` (logged via
+  the Logger). It is **off by default**, so normal runs/tests/CI write nothing,
+  and a write failure never throws — the job still completes. Truncated/garbage
+  raster decodes what it can (padding the rest) rather than throwing.
+
+  ```bash
+  RASTER_OUT=/tmp/out npm run start:emulator        # or:
+  npx tsx src/index.ts emulator --raster-out /tmp/out
+  # a submitted raster job lands as /tmp/out-job<id>-p1.png, ...
+  ```
 - `Validate-Job` — returns `successful-ok`.
 - **mDNS / AirPrint advertising** (`transport/mdns.ts`) — real `_ipp._tcp`
   multicast advertisement via the `bonjour-service` runtime dependency, plus the
@@ -158,9 +176,12 @@ npx tsx src/index.ts scenario   # run the scenarios
 - IPP-over-HTTP server + client transport on port 631 (override via `PORT`).
 
 **Stubbed / partial** (all return valid IPP responses; none throw)
-- Real document rendering/rasterization — documents are accepted and measured
-  (and, for PWG/URF, their page headers parsed for page count + geometry), but
-  the raster pixels are not rendered (`documents/document.ts` `PassthroughHandler`
-  / `RasterDocumentHandler`).
+- Document rendering — **PWG-Raster and URF now render to PNG** (see above; opt-in
+  via `RASTER_OUT`/`--raster-out`). **PDF and PostScript remain passthrough**:
+  they are accepted and measured but not rasterized (there is no PDF/PS
+  rasterizer — `documents/document.ts` `PassthroughHandler`). PWG/URF pixel
+  decode covers 8-bit grayscale and sRGB24/device-RGB (→ luma); other bit depths
+  (e.g. 1-bit/black, 16-bit) and CMYK are read at byte granularity but not
+  separately color-managed — a remaining TODO.
 - Unknown operations — answered with `server-error-operation-not-supported`.
 ```

@@ -28,6 +28,7 @@ import {
 } from './message.js';
 import type { PrinterIdentity } from '../printer/printer-attributes.js';
 import type { JobQueue } from '../printer/job-queue.js';
+import type { Job } from '../printer/job.js';
 
 import { handleGetPrinterAttributes } from './operations/get-printer-attributes.js';
 import { handlePrintJob } from './operations/print-job.js';
@@ -45,6 +46,13 @@ export interface OperationContext {
   queue: JobQueue;
   /** Live printer-state at the moment of the request. */
   printerState: () => PrinterStateValue;
+  /**
+   * Optional "actually print" hook: invoked with a finished raster job so the
+   * emulator can render its PWG/URF pages to PNGs. Present only when an output
+   * target is configured (RASTER_OUT / --raster-out); absent by default so
+   * normal runs/tests write nothing. Never throws.
+   */
+  renderRaster?: (job: Job) => void;
 }
 
 export type OperationHandler = (
