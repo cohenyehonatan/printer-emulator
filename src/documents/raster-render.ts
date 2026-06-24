@@ -23,6 +23,15 @@
  * unknown/absent orientation leaves the page unrotated. See rotatePixels() and
  * orientationToDegrees().
  *
+ * `page-ranges` (RFC 8011 §5.2.7) selects which pages are emitted: only pages
+ * whose 1-based index (counted across all of the job's raster documents, in
+ * submission order) falls inside any requested `{lower, upper}` range are
+ * written. The emitted PNG's `-p<n>` suffix carries the page's ACTUAL 1-based
+ * index — `page-ranges=2-3` of a 4-page job writes `…-p2.png` and `…-p3.png`,
+ * not renumbered `-p1`/`-p2` — so a page's filename always identifies the
+ * source page. An out-of-bounds upper bound simply emits the pages that exist
+ * (no throw). Absent/empty page-ranges renders every page.
+ *
  * Opt-in only: the print handlers invoke this just when a render target is
  * configured (RASTER_OUT env / --raster-out flag), so default runs, tests, and
  * CI write nothing. Writing never throws — a failed write is logged and the job
@@ -34,6 +43,7 @@ import { decodeRasterPages } from './raster-decode.js';
 import { encodeGrayPng, encodeRgbPng } from '../utils/png.js';
 import { OrientationRequested } from '../ipp/constants.js';
 import type { OrientationRequestedValue } from '../ipp/constants.js';
+import type { PageRange } from '../ipp/job-template.js';
 import type { Document } from './document.js';
 import type { Logger } from '../logging/logger.js';
 
@@ -61,6 +71,13 @@ export interface RenderedPage {
  * landscape → 90°, reverse-landscape → 270°, reverse-portrait → 180° (see
  * orientationToDegrees / rotatePixels). 90°/270° swap the emitted width/height.
  * An undefined/unknown orientation leaves the page unrotated.
+ *
+ * `pageRanges` honors `page-ranges`: when supplied, only pages whose 1-based
+ * index (across all the job's raster documents) falls in some `{lower, upper}`
+ * range are written; the rest are skipped. The emitted PNG's `-p<n>` suffix is
+ * the page's ACTUAL 1-based index, not a renumbering of the selected subset.
+ * An undefined/empty list renders every page; an out-of-bounds range just emits
+ * the pages that exist (never throws). See inSelectedRanges().
  */
 export function renderRasterJob(
   documents: readonly Document[],
@@ -68,7 +85,8 @@ export function renderRasterJob(
   prefix: string,
   logger?: Logger,
   forceGrayscale = false,
-  orientation?: OrientationRequestedValue
+  orientation?: OrientationRequestedValue,
+  pageRanges?: PageRange[]
 ): RenderedPage[] {
   const written: RenderedPage[] = [];
   const degrees = orientationToDegrees(orientation);
@@ -80,6 +98,9 @@ export function renderRasterJob(
 
     for (const page of pages) {
       pageNum++;
+      // page-ranges filter: skip a page whose 1-based index isn't selected. The
+      // counter still advances so the emitted `-p<n>` reflects the real index.
+      if (!inSelectedRanges(pageNum, pageRanges)) continue;
       const path = `${prefix}-job${jobId}-p${pageNum}.png`;
       // monochrome mode: a color page is reduced to luma and emitted grayscale.
       const emitGray = !page.isColor || forceGrayscale;
@@ -164,6 +185,20 @@ export function orientationToDegrees(
     default:
       return 0;
   }
+}
+
+/**
+ * Whether a 1-based page index is selected by `page-ranges`. An undefined or
+ * empty range list means "no filter" — every page is selected. Otherwise the
+ * page is selected when its index falls within any inclusive `{lower, upper}`
+ * range. Pure predicate; never throws.
+ */
+export function inSelectedRanges(
+  pageIndex: number,
+  ranges: PageRange[] | undefined
+): boolean {
+  if (!ranges || ranges.length === 0) return true;
+  return ranges.some((r) => pageIndex >= r.lower && pageIndex <= r.upper);
 }
 
 /** A rotated pixel buffer plus its (possibly transposed) dimensions. */
