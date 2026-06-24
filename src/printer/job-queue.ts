@@ -33,4 +33,17 @@ export class JobQueue {
   size(): number {
     return this.jobs.length;
   }
+
+  /**
+   * Remove ALL jobs from the queue — including retained terminal
+   * (completed/canceled/aborted) jobs. Backs Purge-Jobs (0x0012): the admin
+   * "empty the queue entirely" operation. The job-id counter is intentionally
+   * NOT reset, so ids stay monotonic across a purge. Returns the number of jobs
+   * removed.
+   */
+  clear(): number {
+    const removed = this.jobs.length;
+    this.jobs.length = 0;
+    return removed;
+  }
 }

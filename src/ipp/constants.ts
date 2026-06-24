@@ -25,6 +25,8 @@ export const OperationIds = {
   RESTART_JOB: 0x000e,
   PAUSE_PRINTER: 0x0010,
   RESUME_PRINTER: 0x0011,
+  PURGE_JOBS: 0x0012,
+  CANCEL_MY_JOBS: 0x0039,
   CLOSE_JOB: 0x003b,
   IDENTIFY_PRINTER: 0x003c,
 } as const;
