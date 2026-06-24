@@ -52,6 +52,11 @@ export const TRANSITIONS: Transition[] = [
   // Start processing
   { from: JobState.PENDING, event: JobEvent.START_PROCESSING, to: JobState.PROCESSING },
 
+  // Multi-document jobs created via Create-Job begin pending-held (waiting for
+  // Send-Document data) and are released to pending on last-document / Close-Job.
+  // Abort an empty held job that is closed without any documents.
+  { from: JobState.PENDING_HELD, event: JobEvent.ABORT, to: JobState.ABORTED },
+
   // Processing pause / resume
   { from: JobState.PROCESSING, event: JobEvent.STOP_PROCESSING, to: JobState.PROCESSING_STOPPED },
   { from: JobState.PROCESSING_STOPPED, event: JobEvent.RESUME_PROCESSING, to: JobState.PROCESSING },
