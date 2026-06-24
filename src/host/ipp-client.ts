@@ -33,6 +33,7 @@ import {
 } from '../ipp/attribute.js';
 import {
   operationGroup,
+  jobGroup,
   type IppRequest,
   type IppResponse,
 } from '../ipp/message.js';
@@ -71,16 +72,30 @@ export class IppClient {
     return this.send(request);
   }
 
-  /** Print-Job: submit document bytes with a declared format. */
+  /**
+   * Print-Job: submit document bytes with a declared format. Pass
+   * `jobHoldUntil` (RFC 8011 §5.2.2: `no-hold`, `indefinite`, a named time
+   * value, …) to hold the job as `pending-held` instead of printing it — the
+   * job then waits for a Release-Job (or a Hold-Job with `no-hold`). `no-hold`
+   * (or omitting it) prints normally. The value travels in the job-attributes
+   * group as the Job Template attribute it is.
+   */
   async printJob(
     docBytes: Buffer,
     format = 'application/octet-stream',
-    jobName = 'print-job'
+    jobName = 'print-job',
+    options: { jobHoldUntil?: string } = {}
   ): Promise<IppResponse> {
-    const request = this.baseRequest(OperationIds.PRINT_JOB, [
-      nameWithoutLangAttr('job-name', jobName),
-      mimeMediaTypeAttr('document-format', format),
-    ]);
+    const request = this.baseRequest(
+      OperationIds.PRINT_JOB,
+      [
+        nameWithoutLangAttr('job-name', jobName),
+        mimeMediaTypeAttr('document-format', format),
+      ],
+      options.jobHoldUntil !== undefined
+        ? [keywordAttr('job-hold-until', options.jobHoldUntil)]
+        : []
+    );
     request.data = docBytes;
     return this.send(request);
   }
@@ -185,12 +200,21 @@ export class IppClient {
 
   /**
    * Hold-Job: place a pending job into pending-held so it will not print until
-   * a matching releaseJob(). A job already held is left held.
+   * a matching releaseJob(). A job already held is left held. Pass
+   * `jobHoldUntil` (RFC 8011 §5.2.2) to set the hold policy: any holding value
+   * (`indefinite`, a named time value, …) holds the job, while `no-hold`
+   * RELEASES it (Hold-Job with `no-hold` is equivalent to Release-Job per
+   * §4.3.5). Omitting it holds indefinitely.
    */
-  async holdJob(jobId: number): Promise<IppResponse> {
-    const request = this.baseRequest(OperationIds.HOLD_JOB, [
-      integerAttr('job-id', jobId),
-    ]);
+  async holdJob(
+    jobId: number,
+    options: { jobHoldUntil?: string } = {}
+  ): Promise<IppResponse> {
+    const opAttrs: IppAttribute[] = [integerAttr('job-id', jobId)];
+    if (options.jobHoldUntil !== undefined) {
+      opAttrs.push(keywordAttr('job-hold-until', options.jobHoldUntil));
+    }
+    const request = this.baseRequest(OperationIds.HOLD_JOB, opAttrs);
     return this.send(request);
   }
 
@@ -246,10 +270,15 @@ export class IppClient {
 
   // ── Internal ────────────────────────────────────────────────────────
 
-  /** Build a request with the mandatory operation attributes. */
+  /**
+   * Build a request with the mandatory operation attributes. `jobAttrs`, when
+   * non-empty, are appended as a trailing job-attributes group — used for Job
+   * Template attributes like `job-hold-until` on Print-Job/Create-Job.
+   */
   private baseRequest(
     operationId: number,
-    extraOpAttrs: IppAttribute[] = []
+    extraOpAttrs: IppAttribute[] = [],
+    jobAttrs: IppAttribute[] = []
   ): IppRequest {
     return {
       versionMajor: IPP_VERSION_MAJOR,
@@ -266,6 +295,7 @@ export class IppClient {
           uriAttr('printer-uri', this.config.printerUri),
           ...extraOpAttrs,
         ]),
+        ...(jobAttrs.length > 0 ? [jobGroup(jobAttrs)] : []),
       ],
     };
   }
