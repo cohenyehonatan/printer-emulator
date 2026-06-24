@@ -1,14 +1,16 @@
 /**
- * Minimal, dependency-free PNG encoder (8-bit grayscale).
+ * Minimal, dependency-free PNG encoder (8-bit grayscale + 8-bit truecolor).
  *
  * Writes a baseline PNG using only Node's built-in `zlib`: the 8-byte
- * signature, an IHDR chunk (bit-depth 8, color-type 0 = grayscale, no
- * interlace), a single deflated IDAT carrying the scanlines (each prefixed with
- * filter byte 0 = None), and IEND. Every chunk is length-prefixed and trailed
- * by its CRC-32 per the PNG spec (RFC 2083). 8-bit grayscale is the natural fit
- * for the luma we decode out of PWG/URF raster pages.
+ * signature, an IHDR chunk (bit-depth 8, color-type 0 = grayscale or 2 =
+ * truecolor RGB, no interlace), a single deflated IDAT carrying the scanlines
+ * (each prefixed with filter byte 0 = None), and IEND. Every chunk is
+ * length-prefixed and trailed by its CRC-32 per the PNG spec (RFC 2083). The
+ * grayscale form fits the luma we decode out of grayscale PWG/URF pages; the
+ * RGB form preserves color raster pages (sRGB24 / device-RGB / AdobeRGB).
  *
- * Never throws on a well-sized buffer; callers size `gray` as width*height.
+ * Never throws on a well-sized buffer; callers size `gray` as width*height and
+ * `rgb` as width*height*3.
  */
 
 import { deflateSync } from 'zlib';
@@ -48,6 +50,52 @@ export function encodeGrayPng(
     raw[rowStart] = 0; // filter: None
     for (let x = 0; x < w; x++) {
       raw[rowStart + 1 + x] = gray[y * w + x] ?? 0;
+    }
+  }
+
+  const idatData = deflateSync(raw);
+
+  return Buffer.concat([
+    PNG_SIGNATURE,
+    chunk('IHDR', ihdr),
+    chunk('IDAT', idatData),
+    chunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
+/**
+ * Encode a width×height 8-bit truecolor RGB image (`rgb`, row-major, three
+ * bytes per pixel in R,G,B order) as a PNG (color-type 2). If `rgb` is shorter
+ * than width*height*3 the missing trailing samples are treated as 0 (black);
+ * excess bytes are ignored.
+ */
+export function encodeRgbPng(
+  width: number,
+  height: number,
+  rgb: Uint8Array
+): Buffer {
+  const w = Math.max(0, Math.floor(width));
+  const h = Math.max(0, Math.floor(height));
+
+  // IHDR: width, height, bit-depth=8, color-type=2 (truecolor RGB), the three
+  // fixed bytes (compression=0, filter=0, interlace=0).
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr.writeUInt8(8, 8); // bit depth
+  ihdr.writeUInt8(2, 9); // color type: truecolor RGB
+  ihdr.writeUInt8(0, 10); // compression method
+  ihdr.writeUInt8(0, 11); // filter method
+  ihdr.writeUInt8(0, 12); // interlace method
+
+  // Raw scanlines: each row is [filter byte 0][w*3 RGB bytes].
+  const rowBytes = w * 3;
+  const raw = Buffer.alloc(h * (rowBytes + 1));
+  for (let y = 0; y < h; y++) {
+    const rowStart = y * (rowBytes + 1);
+    raw[rowStart] = 0; // filter: None
+    for (let x = 0; x < rowBytes; x++) {
+      raw[rowStart + 1 + x] = rgb[y * rowBytes + x] ?? 0;
     }
   }
 
