@@ -1,0 +1,86 @@
+/**
+ * Default IPP Everywhere printer attribute set.
+ *
+ * The Get-Printer-Attributes response advertises the printer's identity and
+ * capabilities (RFC 8011 §5.4, IPP Everywhere PWG 5100.14). This module builds
+ * a representative printer-attributes group; printer-state is injected at
+ * response time so it always reflects live state.
+ */
+
+import {
+  PrinterStates,
+  type PrinterStateValue,
+  IPP_VERSION_MAJOR,
+  IPP_VERSION_MINOR,
+} from '../ipp/constants.js';
+import {
+  type IppAttribute,
+  enumAttr,
+  booleanAttr,
+  keywordAttr,
+  uriAttr,
+  nameWithoutLangAttr,
+  textWithoutLangAttr,
+  mimeMediaTypeAttr,
+} from '../ipp/attribute.js';
+
+export interface PrinterIdentity {
+  name: string;
+  uri: string;
+  makeAndModel: string;
+}
+
+export const DEFAULT_IDENTITY: PrinterIdentity = {
+  name: 'Emulated IPP Everywhere Printer',
+  uri: 'ipp://localhost:631/ipp/print',
+  makeAndModel: 'printer-emulator 0.1.0',
+};
+
+/** Document formats this emulated printer claims to accept. */
+export const SUPPORTED_FORMATS = [
+  'application/pdf',
+  'application/postscript',
+  'image/pwg-raster',
+  'image/urf',
+  'image/jpeg',
+  'application/octet-stream',
+];
+
+/**
+ * Build the printer-attributes group reported by Get-Printer-Attributes.
+ * `state` is supplied by the caller so the response is always current.
+ */
+export function buildPrinterAttributes(
+  identity: PrinterIdentity,
+  state: PrinterStateValue = PrinterStates.IDLE
+): IppAttribute[] {
+  const version = `${IPP_VERSION_MAJOR}.${IPP_VERSION_MINOR}`;
+  return [
+    uriAttr('printer-uri-supported', identity.uri),
+    keywordAttr('uri-security-supported', 'none'),
+    keywordAttr('uri-authentication-supported', 'requesting-user-name'),
+    nameWithoutLangAttr('printer-name', identity.name),
+    textWithoutLangAttr('printer-make-and-model', identity.makeAndModel),
+    enumAttr('printer-state', state),
+    keywordAttr('printer-state-reasons', 'none'),
+    keywordAttr(
+      'ipp-versions-supported',
+      version === '2.0' ? '2.0' : version,
+      '1.1'
+    ),
+    enumAttr('operations-supported', 0x0002), // Print-Job; extended at runtime
+    keywordAttr('charset-configured', 'utf-8'),
+    keywordAttr('charset-supported', 'utf-8'),
+    keywordAttr('natural-language-configured', 'en'),
+    keywordAttr('generated-natural-language-supported', 'en'),
+    mimeMediaTypeAttr('document-format-default', 'application/octet-stream'),
+    mimeMediaTypeAttr('document-format-supported', ...SUPPORTED_FORMATS),
+    booleanAttr('printer-is-accepting-jobs', true),
+    keywordAttr('pdl-override-supported', 'attempted'),
+    keywordAttr('compression-supported', 'none'),
+    keywordAttr('media-default', 'iso_a4_210x297mm'),
+    keywordAttr('media-supported', 'iso_a4_210x297mm', 'na_letter_8.5x11in'),
+    keywordAttr('sides-supported', 'one-sided', 'two-sided-long-edge'),
+    keywordAttr('print-color-mode-supported', 'monochrome', 'color'),
+  ];
+}
