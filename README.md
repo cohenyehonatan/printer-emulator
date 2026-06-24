@@ -76,7 +76,7 @@ npm run start:emulator                 # defaults to 631; set PORT to change
 
 ```bash
 npm install
-npm test        # vitest: codec round-trip, decoder, formats, raster-info, buffer reader, mDNS, Get-Jobs, Get-Job-Attributes, Cancel-Job
+npm test        # vitest: codec round-trip, decoder, formats, raster-info, buffer reader, mDNS, Get-Jobs, Get-Job-Attributes, Cancel-Job, Create/Send/Close multi-doc, requested-attributes
 ```
 
 **Runtime dependency:** `bonjour-service` provides the mDNS/DNS-SD responder
@@ -97,16 +97,41 @@ npx tsx src/index.ts scenario   # run the scenarios
 **Fully implemented**
 - Binary IPP codec — `encode`/`decode` genuinely round-trip (incl. 1setOf
   multi-values and trailing document data); proven by `test/ipp/codec.test.ts`.
-- `Get-Printer-Attributes` — returns IPP Everywhere attribute set + live state.
-- `Print-Job` — sniffs document-format, enqueues a Job, runs the emulated print
-  (pending → processing → completed), returns job-id/job-uri/job-state.
+- `Get-Printer-Attributes` — returns IPP Everywhere attribute set + live state;
+  honors `requested-attributes` sub-selection.
+- `Print-Job` — sniffs document-format, enqueues a (closed, single-document)
+  Job, runs the emulated print (pending → processing → completed), returns
+  job-id/job-uri/job-state.
+- **Multi-document job lifecycle** — `Create-Job` / `Send-Document` /
+  `Close-Job`:
+  - `Create-Job` (0x0005) allocates an *open* job with no document data yet,
+    enqueues it in `pending-held` (job-state 4, waiting for documents), and
+    returns job-id/job-uri/job-state.
+  - `Send-Document` (0x0006) appends a document (the trailing IPP data) to the
+    open job by `job-id`/`job-uri`, accumulating PWG/URF page counts into
+    `job-impressions` across every document. `last-document=true` releases the
+    held job and runs the emulated print; until then the job stays open for more
+    documents. Unknown job → `client-error-not-found`; sending to an
+    already-closed/single-shot/terminal job → `client-error-not-possible`.
+  - `Close-Job` (0x003B) closes an open job (equivalent to last-document with no
+    further data): releases/runs it when documents were sent, or aborts an empty
+    job that was closed without any. Unknown job → `client-error-not-found`;
+    a non-open job → `client-error-not-possible`.
 - `Get-Job-Attributes` — looks a job up by `job-id` (or `job-uri`) and returns
   its job-state, job-state-reasons, job-name, originating user, timestamps, and
-  impressions-completed; `client-error-not-found` for an unknown job.
+  impressions-completed; honors `requested-attributes` sub-selection;
+  `client-error-not-found` for an unknown job.
 - `Get-Jobs` — lists queued jobs honoring the `which-jobs` filter
   (`not-completed` [default] / `completed` / `all`) and capping the count with
-  `limit`, returned in stable job-id order; `successful-ok` with an empty set
-  when nothing matches.
+  `limit`, returned in stable job-id order; honors `requested-attributes`
+  sub-selection per job; `successful-ok` with an empty set when nothing matches.
+- **`requested-attributes` sub-selection** (`ipp/requested-attributes.ts`) —
+  Get-Printer-Attributes / Get-Job-Attributes / Get-Jobs filter their built
+  attribute set down to the names listed in the `requested-attributes` operation
+  attribute (1setOf keyword), preserving order. Group keywords (`all`,
+  `printer-description`, `job-description`, `job-template`) expand to the full
+  set. When `requested-attributes` is **absent** the full set is returned
+  unchanged (back-compat).
 - `Cancel-Job` — cancels a cancelable job via the state machine (`successful-ok`,
   job → canceled); returns `client-error-not-possible` for a job already in a
   terminal state (completed/canceled/aborted) and `client-error-not-found` for
