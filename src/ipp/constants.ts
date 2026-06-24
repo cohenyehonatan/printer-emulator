@@ -104,6 +104,32 @@ export const JobStates = {
 
 export type JobStateValue = (typeof JobStates)[keyof typeof JobStates];
 
+// ── job-hold-until keyword values — RFC 8011 §5.2.2 ───────────────────────
+/**
+ * Standard `job-hold-until` (type2 keyword | name) values. `no-hold` means the
+ * job is NOT held and runs normally; every other value holds the job as
+ * `pending-held`. The named time values (`day-time` … `third-shift`) are wall-
+ * clock release windows in a full implementation; this emulator has no
+ * wall-clock release policy, so they map to held-until-explicit-Release-Job
+ * (see hold-until.ts). Advertised via `job-hold-until-supported`.
+ */
+export const JobHoldUntil = {
+  NO_HOLD: 'no-hold',
+  INDEFINITE: 'indefinite',
+  DAY_TIME: 'day-time',
+  EVENING: 'evening',
+  NIGHT: 'night',
+  WEEKEND: 'weekend',
+  SECOND_SHIFT: 'second-shift',
+  THIRD_SHIFT: 'third-shift',
+} as const;
+
+export type JobHoldUntilValue =
+  (typeof JobHoldUntil)[keyof typeof JobHoldUntil];
+
+/** Default `job-hold-until` when a client omits it: do not hold. */
+export const JOB_HOLD_UNTIL_DEFAULT = JobHoldUntil.NO_HOLD;
+
 // ── Charset / natural language defaults ───────────────────────────────────
 export const DEFAULT_CHARSET = 'utf-8';
 export const DEFAULT_NATURAL_LANGUAGE = 'en';
