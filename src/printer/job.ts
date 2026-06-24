@@ -168,6 +168,47 @@ export class Job {
     }
   }
 
+  /**
+   * Hold the job (Hold-Job, 0x000C). Drives a PENDING job to PENDING_HELD via
+   * JobEvent.HOLD; a job already PENDING_HELD is left held (idempotent success).
+   * Returns false when the job is in a state that cannot be held (processing or
+   * terminal), mirroring cancel()'s "false rather than throw" contract.
+   */
+  hold(): boolean {
+    if (this.sm.getState() === JobState.PENDING_HELD) return true;
+    if (!this.sm.canTransition(JobEvent.HOLD)) return false;
+    this.sm.transition(JobEvent.HOLD);
+    return true;
+  }
+
+  /**
+   * Release the job (Release-Job, 0x000D). A PENDING_HELD job is released to
+   * PENDING (JobEvent.RELEASE) and then run to completion via process(), so a
+   * held job actually prints on release — reusing the same pending → processing
+   * → completed path Close-Job/last-document uses. A job that is not held is a
+   * no-op success (RFC 8011 §4.3.6). Returns false only for a terminal job
+   * (completed/canceled/aborted), which cannot be released.
+   */
+  release(): boolean {
+    const state = this.sm.getState();
+    if (
+      state === JobState.COMPLETED ||
+      state === JobState.CANCELED ||
+      state === JobState.ABORTED
+    ) {
+      return false;
+    }
+    if (state !== JobState.PENDING_HELD) {
+      // Already pending/processing — nothing to release; treat as a no-op.
+      return true;
+    }
+    this.sm.transition(JobEvent.RELEASE);
+    // The job is no longer waiting for more documents; run the emulated print.
+    this._open = false;
+    this.process();
+    return true;
+  }
+
   /** Cancel the job if its current state allows it. Returns success. */
   cancel(): boolean {
     if (!this.sm.canTransition(JobEvent.CANCEL)) return false;
