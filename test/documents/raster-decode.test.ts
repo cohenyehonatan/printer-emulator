@@ -360,27 +360,29 @@ describe('decodeRasterPages — PWG Raster (1-bit / 16-bit / CMYK)', () => {
     expect(Array.from(page.gray)).toEqual([0xab, 0x12]);
   });
 
-  it('converts CMYK pixels to grayscale luma (CMYK→RGB→Rec.601)', () => {
-    // width=3, CMYK (4 bytes/pixel).
-    //  px0: 0,0,0,0      → R=G=B=255 → luma 255 (white)
-    //  px1: 255,255,255,0 → R=G=B=0   → luma 0   (black)
-    //  px2: 0,0,0,128    → kf=1-128/255≈0.498; R=G=B=255*0.498≈127 → luma 127
+  it('converts CMYK pixels to RGB color (isColor true)', () => {
+    // width=4, CMYK (4 bytes/pixel). R=255*(1-C/255)*(1-K/255); G←M; B←Y.
+    //  px0: C=M=Y=K=0       → 255,255,255 (white)
+    //  px1: C=255,M=Y=K=0   → 0,255,255   (cyan)
+    //  px2: C=M=Y=0,K=255   → 0,0,0       (black)
+    //  px3: C=0,M=255,Y=255,K=0 → 255,0,0 (red)
     const header = pwgPageHeader({
-      width: 3,
+      width: 4,
       height: 1,
       dpiX: 300,
       dpiY: 300,
       bitsPerColor: 8,
       bitsPerPixel: 32,
-      bytesPerLine: 12, // 3 px * 4 bytes
+      bytesPerLine: 16, // 4 px * 4 bytes
       colorSpace: 6, // CUPS_CSPACE_CMYK
     });
     const line = [
       lineRepeat(1),
-      literalControl(3),
+      literalControl(4),
       0x00, 0x00, 0x00, 0x00, // white
-      0xff, 0xff, 0xff, 0x00, // black
-      0x00, 0x00, 0x00, 0x80, // 50% black
+      0xff, 0x00, 0x00, 0x00, // cyan
+      0x00, 0x00, 0x00, 0xff, // black (K=255)
+      0x00, 0xff, 0xff, 0x00, // red
     ];
 
     const blob = Buffer.concat([
@@ -389,12 +391,57 @@ describe('decodeRasterPages — PWG Raster (1-bit / 16-bit / CMYK)', () => {
       Buffer.from(line),
     ]);
 
-    // Mirror the decoder's exact arithmetic for px2.
+    const page = decodeRasterPages(blob)![0];
+    expect(page.widthPx).toBe(4);
+    expect(page.isColor).toBe(true);
+    expect(page.gray).toHaveLength(0);
+    expect(Array.from(page.rgb)).toEqual([
+      0xff, 0xff, 0xff, // white
+      0x00, 0xff, 0xff, // cyan
+      0x00, 0x00, 0x00, // black
+      0xff, 0x00, 0x00, // red
+    ]);
+  });
+
+  it('downsamples 64-bit CMYK to RGB by taking each channel high byte', () => {
+    // width=2, 64-bit CMYK (16-bit big-endian channels, 8 bytes/pixel).
+    // High bytes drive the conversion R=255*(1-C/255)*(1-K/255); G←M; B←Y.
+    //  px0: C=0xFFxx,M=Y=K=0x00xx → C=255,M=Y=K=0 → 0,255,255 (cyan)
+    //  px1: C=M=Y=0x00xx,K=0x80xx → K=128 → kf≈0.498 → 127,127,127
+    const header = pwgPageHeader({
+      width: 2,
+      height: 1,
+      dpiX: 300,
+      dpiY: 300,
+      bitsPerColor: 16,
+      bitsPerPixel: 64,
+      bytesPerLine: 16, // 2 px * 8 bytes
+      colorSpace: 6, // CUPS_CSPACE_CMYK
+    });
+    const line = [
+      lineRepeat(1),
+      literalControl(2),
+      0xff, 0x11, 0x00, 0x22, 0x00, 0x33, 0x00, 0x44, // px0: C=255 rest 0
+      0x00, 0x55, 0x00, 0x66, 0x00, 0x77, 0x80, 0x88, // px1: K=128 rest 0
+    ];
+
+    const blob = Buffer.concat([
+      Buffer.from('RaS2', 'ascii'),
+      header,
+      Buffer.from(line),
+    ]);
+
+    // Mirror the decoder's exact arithmetic for px1 (K=0x80=128).
     const kf = 1 - 128 / 255;
-    const mid = Math.round((0.299 + 0.587 + 0.114) * (255 * kf)) & 0xff;
+    const mid = Math.round(255 * kf) & 0xff;
 
     const page = decodeRasterPages(blob)![0];
-    expect(Array.from(page.gray)).toEqual([0xff, 0x00, mid]);
+    expect(page.isColor).toBe(true);
+    expect(page.gray).toHaveLength(0);
+    expect(Array.from(page.rgb)).toEqual([
+      0x00, 0xff, 0xff, // px0 cyan
+      mid, mid, mid, // px1 50% black gray
+    ]);
   });
 });
 
