@@ -32,7 +32,11 @@ export function handleGetPrinterAttributes(
 ): IppResponse {
   const printerAttrs = applyRequestedAttributes(
     request,
-    buildPrinterAttributes(ctx.identity, ctx.printerState())
+    buildPrinterAttributes(
+      ctx.identity,
+      ctx.printerState(),
+      ctx.printerStateReasons?.()
+    )
   );
 
   return {
