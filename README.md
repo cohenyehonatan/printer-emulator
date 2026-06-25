@@ -118,7 +118,7 @@ ippfind _ipps._tcp                 # or: dns-sd -B _ipps._tcp
 
 ```bash
 npm install
-npm test        # vitest: codec round-trip, decoder, formats, raster-info, buffer reader, mDNS, Get-Jobs, Get-Job-Attributes, Cancel-Job, Purge-Jobs, Cancel-My-Jobs, Hold/Release-Job, Restart-Job, job-hold-until, print Job Template attrs (print-color-mode/quality/sides/orientation/media), page-ranges (codec round-trip + parse/echo + render filter), number-up (grid/composite helpers + parse/echo/advertise + N-up render), Pause/Resume/Identify-Printer, Set-Printer/Job-Attributes, Create/Send/Close multi-doc, event-notification subscriptions (RFC 3995/3996 pull-mode: Create-*-Subscriptions/Get-Subscription(s)/Renew/Cancel-Subscription/Get-Notifications + 0x06/0x07 codec round-trip), requested-attributes
+npm test        # vitest: codec round-trip, decoder, formats, raster-info, buffer reader, mDNS, Get-Jobs, Get-Job-Attributes, Cancel-Job, Purge-Jobs, Cancel-My-Jobs, Hold/Release-Job, Restart-Job, job-hold-until, print Job Template attrs (print-color-mode/quality/sides/orientation/media), page-ranges (codec round-trip + parse/echo + render filter), number-up (grid/composite helpers + parse/echo/advertise + N-up render), sides tumble (two-sided-short-edge rotates even/back pages 180°), Pause/Resume/Identify-Printer, Set-Printer/Job-Attributes, Create/Send/Close multi-doc, event-notification subscriptions (RFC 3995/3996 pull-mode: Create-*-Subscriptions/Get-Subscription(s)/Renew/Cancel-Subscription/Get-Notifications + 0x06/0x07 codec round-trip), requested-attributes
 ```
 
 **Runtime dependency:** `bonjour-service` provides the mDNS/DNS-SD responder
@@ -338,6 +338,33 @@ npx tsx src/index.ts scenario   # run the scenarios
   render-affecting attributes, the Ghostscript-backed PDF/PostScript path is
   **not** N-up'd (gs `number-up` isn't threaded through), so `number-up` affects
   only PWG/URF jobs.
+
+  **`sides=two-sided-short-edge` actually tumbles the back pages.** Short-edge
+  (a.k.a. "tumble") duplex images the **back** of each sheet head-to-toe
+  relative to its front, so a reader flipping the stack about the short edge sees
+  both sides upright. The in-process PWG/URF render path models this by rotating
+  every **even** page **180°** — pages 2, 4, 6, … are the backs of sheets 1, 2,
+  3, … — and leaving odd/front pages untouched. `one-sided` and
+  `two-sided-long-edge` (long-edge binding keeps the back upright) are **no-ops**,
+  byte-identical to a job with no `sides`, as is an absent/unknown value (treated
+  as one-sided). Details:
+  - **Page-index basis:** "even" is the page's 1-based position in the **final
+    emitted sequence** — the Nth page actually written **after** `page-ranges`
+    filtering, **not** the source page's physical index. If `page-ranges` drops
+    physical page 1, the surviving pages are renumbered 1, 2, 3, … for the
+    tumble, so the even sheets are counted over the **emitted** sequence (the
+    sheets the printer would actually produce from the selected subset). The
+    emitted PNG's `-p<n>` suffix still carries the physical source-page index.
+  - **Compose order:** the 180° tumble is applied **after** `orientation`
+    rotation and **after** `print-quality` downscale (orientation → quality →
+    tumble-180-on-even), and **before** `number-up` tiling. The tumble acts on
+    **source pages** before compositing, so when `number-up` > 1 the rotated back
+    pages are tiled into sheets exactly as the fronts are (consistent with how
+    `orientation`/`print-quality` compose). 180° preserves the page's
+    width/height, color, and bit depth — only the pixel arrangement flips.
+  - Like the other render-affecting attributes, the Ghostscript-backed
+    PDF/PostScript path is **not** tumbled (gs duplex/`sides` control isn't
+    threaded through), so `sides` affects only PWG/URF jobs.
 - `Pause-Printer` (0x0010) — pauses the printer: drives `printer-state` to
   `stopped` (5) with `printer-state-reasons` = `paused`, and **defers job
   execution**. While paused, the job-running paths (Print-Job after enqueue;

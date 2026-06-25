@@ -77,6 +77,34 @@
  * `-p<sheetIndex>` with `sheetIndex` starting at 1 (sheet, not source-page,
  * numbering). `number-up` ≤ 1 (or absent) keeps the one-PNG-per-page behavior.
  *
+ * `sides` (RFC 8011 §5.2.8) ALSO changes the output, but only for the
+ * `two-sided-short-edge` (short-edge / "tumble" duplex) keyword: the BACK side
+ * of each sheet is imaged head-to-toe relative to the front, so on a real duplex
+ * printer the reader flips the stack about the short edge and the back page is
+ * upside-down relative to the front unless the imaging is pre-rotated. The
+ * emulator models this by rotating every EVEN page 180° (pages 2, 4, 6, … are
+ * the backs of sheets 1, 2, 3, …); odd/front pages are untouched. `one-sided`
+ * and `two-sided-long-edge` (long-edge binding keeps the back upright) are
+ * no-ops, byte-identical to a job with no `sides`, as is an absent/unknown
+ * value (treated as one-sided).
+ *
+ * Page-index basis: "even" is the page's 1-based position in the FINAL prepared
+ * sequence — the Nth page actually EMITTED after `page-ranges` filtering, NOT
+ * the source page's physical index. So if `page-ranges` drops physical page 1,
+ * the surviving pages are renumbered 1, 2, 3, … for the tumble and the (new)
+ * even ones are rotated. This keeps the front/back alternation aligned with the
+ * sheets the printer would actually produce from the selected subset.
+ *
+ * Compose order: the tumble 180° is applied in the per-page pass AFTER
+ * orientation rotation and AFTER print-quality downscale (orientation → quality
+ * → tumble-180-on-even), and BEFORE number-up tiling — so the rotation lands on
+ * the page in its final per-page geometry, and when `number-up` > 1 the rotated
+ * back pages are tiled into sheets exactly as the fronts are (the tumble acts on
+ * SOURCE pages before compositing, consistent with how orientation/quality
+ * compose). 180° preserves the page's width/height, so dimensions, color, and
+ * bit depth are unchanged — only the pixel arrangement flips. See
+ * sidesTumbles() and rotatePixels(..., 180).
+ *
  * Opt-in only: the print handlers invoke this just when a render target is
  * configured (RASTER_OUT env / --raster-out flag), so default runs, tests, and
  * CI write nothing. Writing never throws — a failed write is logged and the job
@@ -91,10 +119,11 @@ import {
   encodeGray16Png,
   encodeRgb16Png,
 } from '../utils/png.js';
-import { OrientationRequested, PrintQuality } from '../ipp/constants.js';
+import { OrientationRequested, PrintQuality, Sides } from '../ipp/constants.js';
 import type {
   OrientationRequestedValue,
   PrintQualityValue,
+  SidesValue,
 } from '../ipp/constants.js';
 import type { PageRange } from '../ipp/job-template.js';
 import type { Document } from './document.js';
@@ -146,6 +175,15 @@ export interface RenderedPage {
  * factor of 1.0 (normal/high, or an unknown/absent value) leaves pages
  * unchanged, so a job with no print-quality renders byte-identically to before.
  * See printQualityToFactor() / downscalePixels().
+ *
+ * `sides` honors `sides=two-sided-short-edge` (tumble duplex): every EVEN page
+ * (2, 4, 6, … in the FINAL post-`page-ranges` emitted sequence) is rotated 180°
+ * so the back of each sheet is imaged head-to-toe relative to its front; odd
+ * pages are untouched. The 180° is applied in the per-page pass after
+ * orientation rotation and print-quality downscale (so it composes with both)
+ * and before number-up tiling. `one-sided`, `two-sided-long-edge`, and an
+ * undefined/unknown value are no-ops, so a job with no `sides` renders
+ * byte-identically to before. See sidesTumbles() / rotatePixels(..., 180).
  */
 export function renderRasterJob(
   documents: readonly Document[],
@@ -156,10 +194,16 @@ export function renderRasterJob(
   orientation?: OrientationRequestedValue,
   pageRanges?: PageRange[],
   numberUp?: number,
-  printQuality?: PrintQualityValue
+  printQuality?: PrintQualityValue,
+  sides?: SidesValue
 ): RenderedPage[] {
   const degrees = orientationToDegrees(orientation);
   const qualityFactor = printQualityToFactor(printQuality);
+  const tumble = sidesTumbles(sides);
+  // `emitIndex` counts the pages that SURVIVE page-ranges filtering, 1-based —
+  // the position in the FINAL prepared sequence. The tumble's "even page" basis
+  // is this emitted index, not the physical source-page index (`pageNum`).
+  let emitIndex = 0;
 
   // ── Pass 1: decode + page-ranges filter + monochrome/rotate, collecting the
   // emit-ready pixel buffers (in source order). Keeping the prepared pages lets
@@ -175,6 +219,9 @@ export function renderRasterJob(
       // page-ranges filter: skip a page whose 1-based index isn't selected. The
       // counter still advances so the emitted `-p<n>` reflects the real index.
       if (!inSelectedRanges(pageNum, pageRanges)) continue;
+      // This page survives the filter — advance the emitted-sequence counter
+      // that drives the tumble's even/odd (back/front) basis.
+      emitIndex++;
       // monochrome mode: a color page is reduced to luma and emitted grayscale.
       const emitGray = !page.isColor || forceGrayscale;
       const isRgb = page.isColor && !emitGray;
@@ -228,14 +275,29 @@ export function renderRasterJob(
         qualityFactor
       );
 
+      // Tumble (sides=two-sided-short-edge): rotate the BACK of each sheet 180°
+      // — every EVEN page in the emitted sequence (emitIndex 2, 4, 6, …). 180°
+      // keeps width/height, so this composes cleanly with orientation/quality
+      // and number-up; odd/front pages and non-tumbling sides are a pass-through.
+      const tumbled =
+        tumble && emitIndex % 2 === 0
+          ? rotatePixels(
+              scaled.pixels,
+              scaled.width,
+              scaled.height,
+              bytesPerPixel,
+              180
+            )
+          : scaled;
+
       prepared.push({
         index: pageNum,
-        width: scaled.width,
-        height: scaled.height,
+        width: tumbled.width,
+        height: tumbled.height,
         bytesPerPixel,
         isRgb,
         bitDepth: page.bitDepth,
-        pixels: scaled.pixels,
+        pixels: tumbled.pixels,
         dpi: page.dpi,
       });
     }
@@ -628,6 +690,16 @@ export function printQualityToFactor(
     default:
       return 1.0;
   }
+}
+
+/**
+ * Whether a `sides` keyword calls for the tumble (short-edge duplex) transform:
+ * true only for `two-sided-short-edge`. `one-sided`, `two-sided-long-edge`, and
+ * an undefined/unrecognized value all return false (no per-page rotation). When
+ * true, renderRasterJob rotates every even (back) page 180°. Pure; never throws.
+ */
+export function sidesTumbles(sides: SidesValue | undefined): boolean {
+  return sides === Sides.TWO_SIDED_SHORT_EDGE;
 }
 
 /** A downscaled pixel buffer plus its (reduced) dimensions. */
