@@ -111,6 +111,21 @@ export const StatusCodes = {
    * not `ippget` (the only delivery this pull-mode emulator supports).
    */
   CLIENT_ERROR_ATTRIBUTES_NOT_SUPPORTED: 0x040b,
+  /**
+   * client-error-document-format-error (RFC 8011 §14.1.4.11, 0x040A): the
+   * supplied document data is malformed for its (declared/detected) format.
+   * Here it is the result of a body that advertised a `compression` method
+   * (gzip/deflate) but could not be decompressed — the printer accepted the
+   * compression keyword but the octets were not a valid stream for it.
+   */
+  CLIENT_ERROR_DOCUMENT_FORMAT_ERROR: 0x040a,
+  /**
+   * client-error-compression-not-supported (RFC 8011 §14.1.4.14, 0x040E): the
+   * `compression` operation attribute named a method the printer does not
+   * advertise in `compression-supported`. This emulator supports `none`,
+   * `gzip`, and `deflate`; any other keyword yields this status.
+   */
+  CLIENT_ERROR_COMPRESSION_NOT_SUPPORTED: 0x040e,
   SERVER_ERROR_OPERATION_NOT_SUPPORTED: 0x0501,
   /**
    * server-error-not-accepting-jobs (RFC 8011 §14.1.5.8, 0x0506): the printer is
