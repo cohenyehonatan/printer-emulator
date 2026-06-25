@@ -503,9 +503,13 @@ npx tsx src/index.ts scenario   # run the scenarios
   **64-bit CMYK** (16-bit channels) takes the high byte of each of C,M,Y,K first,
   then the same conversion — **CMYK is emitted as 8-bit RGB regardless of source
   depth** (the naive CMYK→RGB conversion is already lossy, so widening to 16-bit
-  adds no fidelity) (the grayscale/1-bit paths are unchanged). The CMYK→RGB
-  conversion is purely colorimetric-naive: ICC/colorimetric profiles are still not
-  applied (sRGB and AdobeRGB are treated identically, and CMYK is not
+  adds no fidelity) (the grayscale/1-bit paths are unchanged). **AdobeRGB
+  (cupsColorSpace 20) is now colorimetrically converted to sRGB** via real
+  (bounded) ICC matrix-shaper color management (see the ICC bullet below): at
+  decode time each AdobeRGB pixel is run through AdobeRGB → PCS XYZ(D50) → sRGB
+  (matrix + per-channel TRC, simple gamut clip) so the emitted PNG is
+  sRGB-correct; sRGB / device-RGB pages stay byte-identical passthrough, and the
+  CMYK→RGB conversion remains purely colorimetric-naive (CMYK is not
   device-link/profile-managed). `utils/png.ts` then writes a PNG matching the
   page's depth: 8-bit grayscale (color-type 0) / 8-bit truecolor (color-type 2)
   for 8-bit pages, or **16-bit grayscale / 16-bit truecolor** (bit-depth 16, via
@@ -529,6 +533,35 @@ npx tsx src/index.ts scenario   # run the scenarios
   npx tsx src/index.ts emulator --raster-out /tmp/out
   # a submitted raster job lands as /tmp/out-job<id>-p1.png, ...
   ```
+- **ICC matrix-shaper color management (AdobeRGB → sRGB)** — `documents/icc.ts`
+  parses **matrix/TRC (matrix-shaper) ICC profiles** and applies an
+  input→output colorimetric transform; `documents/icc-profiles.ts` supplies the
+  built-in **sRGB** and **AdobeRGB (1998)** profiles. When a raster page's
+  colorSpace is **AdobeRGB** (cupsColorSpace 20), `raster-decode.ts` converts each
+  pixel AdobeRGB → PCS **XYZ (D50)** → sRGB before it lands in the decoded buffer,
+  so the emitted PNG is sRGB-correct (AdobeRGB has wider red/green primaries and a
+  gamma-2.19921875 tone curve, so the old passthrough-as-sRGB rendered it wrong).
+  Both 8-bit and 48-bit AdobeRGB pages are converted (16-bit AdobeRGB → 16-bit
+  sRGB at full precision); sRGB / device-RGB sources are unchanged (byte-identical
+  passthrough). The pipeline is the standard ICC colorimetric matrix conversion:
+  linearize via the input TRCs, `XYZ = M_in · linearRGB`, `linearOut = M_out⁻¹ ·
+  XYZ`, clip out-of-gamut linear to [0,1], re-encode via the output TRC inverse.
+  **Profile values / source**: the two built-in colorant matrices are the
+  **D50-adapted** RGB→XYZ matrices built from each space's published D65
+  chromaticities (sRGB/Rec.709 and AdobeRGB(1998) primaries) Bradford-adapted to
+  D50 — the same values stored in the canonical sRGB IEC61966-2.1 and
+  AdobeRGB(1998) ICC profiles (e.g. sRGB rXYZ ≈ 0.4361/0.2225/0.0139; AdobeRGB
+  rXYZ ≈ 0.6097/0.3111/0.0195; each matrix's white-point column sums to the D50
+  white XYZ 0.96422/1.0/0.82521). TRCs: sRGB uses the IEC 61966-2.1 piecewise
+  parametric curve; AdobeRGB uses pure gamma 563/256 = 2.19921875. Because both
+  profiles share the D50 white point, **neutral grays map near-identically**
+  (gray 128 → ≈129) while saturated AdobeRGB colors shift (e.g. AdobeRGB
+  (100,150,50) → sRGB ≈ (66,151,34); a pure AdobeRGB green clips to the sRGB green
+  corner). **Scope**: matrix-shaper only — **no A2B/B2A LUT profiles**, no
+  named-color/device-link, and **no perceptual/saturation rendering-intent gamut
+  mapping** (out-of-gamut is a simple colorimetric clip). The parser ignores
+  non-matrix-shaper profiles (returns `null` → passthrough) and never throws on
+  malformed bytes.
 - **PDF / PostScript rasterization** — `documents/gs-raster.ts` rasterizes PDF
   and PostScript print jobs to one PNG per page by shelling out to the system
   **Ghostscript** (`gs`) binary, the same approach CUPS uses in its filter chain
@@ -584,10 +617,14 @@ npx tsx src/index.ts scenario   # run the scenarios
   CMYK color spaces render to color PNG** (CMYK via the naive CMYK→RGB conversion
   above, always 8-bit); grayscale/1-bit stay 8-bit grayscale. **16-bit grayscale
   and 48-bit RGB now emit true 16-bit PNGs** (bit-depth 16, full precision — no
-  8-bit downsample). Remaining TODO: 16-bit *output* for CMYK (64-bit CMYK is
-  still emitted as 8-bit RGB — its CMYK→RGB conversion is already lossy);
-  ICC/colorimetric profiles (no white-point/gamma management — sRGB and AdobeRGB
-  are treated identically, and CMYK→RGB is naive rather than profile-managed);
+  8-bit downsample). **AdobeRGB is now ICC-color-managed to sRGB** (matrix-shaper
+  matrix + TRC, simple gamut clip — see the ICC bullet above), so sRGB and
+  AdobeRGB are no longer treated identically. Remaining TODO: 16-bit *output* for
+  CMYK (64-bit CMYK is still emitted as 8-bit RGB — its CMYK→RGB conversion is
+  already lossy); **CMYK is still not profile-managed** (naive subtractive
+  CMYK→RGB rather than an ICC CMYK profile); **only matrix-shaper ICC profiles**
+  are supported (no A2B/B2A LUT profiles, device-link, or perceptual/saturation
+  rendering-intent gamut mapping — out-of-gamut AdobeRGB is simply clipped);
   `number-up` tiling of 16-bit pages downsamples to 8-bit before compositing; and
   exotic colorSpaces (CIE Lab/XYZ, DeviceN/multi-ink separations) which fall back
   to the byte-width heuristic rather than being color-managed.

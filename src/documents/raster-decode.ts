@@ -36,10 +36,19 @@
  *     black (K) → 1=black, 0=white. → `gray`.
  *   - 16-bit grayscale: each pixel is 2 bytes big-endian, combined into one
  *     full-precision uint16 sample (no downsampling). → `gray16`, `bitDepth` 16.
- *   - sRGB24 / device-RGB / AdobeRGB (3 bytes, 8-bit channels): preserved as
- *     RGB. → `rgb` (3 bytes/pixel), `isColor` true.
+ *   - sRGB24 / device-RGB (3 bytes, 8-bit channels): preserved as RGB,
+ *     unchanged (already sRGB). → `rgb` (3 bytes/pixel), `isColor` true.
+ *   - AdobeRGB (colorSpace 20, 3 bytes, 8-bit channels): preserved as RGB but
+ *     **colorimetrically converted to sRGB** via the built-in matrix-shaper ICC
+ *     profiles (AdobeRGB → PCS XYZ(D50) → sRGB; matrix + TRC, simple gamut clip —
+ *     see documents/icc.ts / icc-profiles.ts). AdobeRGB has wider primaries and a
+ *     different (gamma 2.19921875) tone curve, so passing it through as sRGB
+ *     would render wrong; the transform fixes that so the emitted PNG is
+ *     sRGB-correct. → `rgb` (3 bytes/pixel), `isColor` true. Applied per pixel at
+ *     decode time so every downstream consumer (render/PNG) sees sRGB.
  *   - 48-bit RGB (16-bit channels): each of R,G,B combined big-endian into a
- *     full-precision uint16 sample (no downsampling). → `rgb16` (3 uint16/pixel),
+ *     full-precision uint16 sample (no downsampling); AdobeRGB 48-bit is likewise
+ *     converted to 16-bit sRGB. → `rgb16` (3 uint16/pixel),
  *     `isColor` true, `bitDepth` 16.
  *   - CMYK (4 bytes, 8-bit channels): converted to RGB color (not grayscale)
  *     so CMYK jobs render in color. Conversion is the naive subtractive model
@@ -54,6 +63,16 @@
  * Robustness: truncated or malformed input never throws. Whatever rows/pixels
  * could be decoded are kept; the rest of the page is left as padding (0) and
  * decoding stops cleanly at the point of damage.
+ *
+ * ICC color management (AdobeRGB → sRGB): AdobeRGB (cupsColorSpace 20) is the one
+ * RGB space whose pixels are not already sRGB. When a page's colorSpace is
+ * AdobeRGB, each decoded RGB pixel is run through `applyIccRgb(pixel, AdobeRGB,
+ * sRGB, maxval)` (documents/icc.ts) so the decoded `rgb`/`rgb16` buffer — and
+ * therefore the emitted PNG — is sRGB. The conversion is colorimetric matrix
+ * conversion (device→XYZ(D50)→device with per-channel TRCs) plus a simple
+ * out-of-gamut clip; it is matrix-shaper only (no A2B/B2A LUT profiles, no
+ * rendering-intent gamut mapping). sRGB/device-RGB sources are unchanged
+ * (byte-identical passthrough). Never throws — the transform is pure.
  */
 
 /**
@@ -67,6 +86,9 @@
  * (`Uint8Array(0)` / `Uint16Array(0)`). The 16-bit buffers carry the full
  * precision of 16-bit grayscale and 48-bit RGB sources (no high-byte downsample).
  */
+import { applyIccRgb } from './icc.js';
+import { ADOBE_RGB_PROFILE, SRGB_PROFILE } from './icc-profiles.js';
+
 export interface DecodedRasterPage {
   widthPx: number;
   heightPx: number;
@@ -115,6 +137,7 @@ const COLORSPACE_RGB_LIKE = new Set<number>([
   20, // AdobeRGB
   48, // DEVRGB (device RGB)
 ]);
+const COLORSPACE_ADOBE_RGB = 20; // CUPS_CSPACE_ADOBERGB (3 samples, wider gamut)
 const COLORSPACE_CMYK = 6; // CUPS_CSPACE_CMYK (4 samples: C, M, Y, K)
 // Subtractive single-channel "black" spaces: value = ink amount, so 0 = white.
 // (CUPS_CSPACE_K = 3.) Additive gray (W=0, sGray=18) is the opposite: 0 = black.
@@ -287,6 +310,13 @@ interface PageGeometry {
   pixelsPerGroup: number;
   /** How to reduce one color value to gray sample(s). */
   kind: PixelKind;
+  /**
+   * True for an AdobeRGB (cupsColorSpace 20) color page: decoded RGB pixels are
+   * colorimetrically converted to sRGB via the built-in ICC profiles (see
+   * expandGroup / applyIccRgb). Only meaningful for `Rgb`/`Rgb16` kinds; sRGB /
+   * device-RGB pages leave this false and pass through unchanged.
+   */
+  adobeRgb: boolean;
 }
 
 interface DecodeResult {
@@ -337,7 +367,7 @@ function resolveGeometry(
   if (bitsPerColor === 1 && bitsPerPixel <= 1) {
     const kind =
       colorSpace === COLORSPACE_BLACK ? PixelKind.Black1 : PixelKind.Gray1;
-    return { groupBytes: 1, pixelsPerGroup: 8, kind };
+    return { groupBytes: 1, pixelsPerGroup: 8, kind, adobeRgb: false };
   }
 
   // ── Whole-byte color values (one pixel each). ──
@@ -384,7 +414,13 @@ function resolveGeometry(
     kind = PixelKind.Gray8;
   }
 
-  return { groupBytes, pixelsPerGroup: 1, kind };
+  // AdobeRGB pages (and only those) carry the ICC AdobeRGB→sRGB conversion flag.
+  // It only matters for the RGB kinds; CMYK/gray ignore it.
+  const adobeRgb =
+    colorSpace === COLORSPACE_ADOBE_RGB &&
+    (kind === PixelKind.Rgb || kind === PixelKind.Rgb16);
+
+  return { groupBytes, pixelsPerGroup: 1, kind, adobeRgb };
 }
 
 /**
@@ -392,23 +428,55 @@ function resolveGeometry(
  * additive gray/RGB/CMYK, never the subtractive "black" space, so no inversion.
  */
 function urfGeometry(bpp: number): PageGeometry {
+  // URF has no colorspace field, so it never carries the AdobeRGB conversion
+  // flag — its RGB is treated as sRGB (passthrough), like the device-RGB path.
   if (bpp <= 1) {
-    return { groupBytes: 1, pixelsPerGroup: 8, kind: PixelKind.Gray1 };
+    return {
+      groupBytes: 1,
+      pixelsPerGroup: 8,
+      kind: PixelKind.Gray1,
+      adobeRgb: false,
+    };
   }
   if (bpp >= 48) {
     // 48-bit ⇒ three 16-bit RGB channels (URF color is RGB, not CMYK).
-    return { groupBytes: 6, pixelsPerGroup: 1, kind: PixelKind.Rgb16 };
+    return {
+      groupBytes: 6,
+      pixelsPerGroup: 1,
+      kind: PixelKind.Rgb16,
+      adobeRgb: false,
+    };
   }
   if (bpp >= 32) {
-    return { groupBytes: 4, pixelsPerGroup: 1, kind: PixelKind.Cmyk };
+    return {
+      groupBytes: 4,
+      pixelsPerGroup: 1,
+      kind: PixelKind.Cmyk,
+      adobeRgb: false,
+    };
   }
   if (bpp >= 24) {
-    return { groupBytes: 3, pixelsPerGroup: 1, kind: PixelKind.Rgb };
+    return {
+      groupBytes: 3,
+      pixelsPerGroup: 1,
+      kind: PixelKind.Rgb,
+      adobeRgb: false,
+    };
   }
   if (bpp >= 16) {
-    return { groupBytes: 2, pixelsPerGroup: 1, kind: PixelKind.Gray16 };
+    return {
+      groupBytes: 2,
+      pixelsPerGroup: 1,
+      kind: PixelKind.Gray16,
+      adobeRgb: false,
+    };
   }
-  return { groupBytes: 1, pixelsPerGroup: 1, kind: PixelKind.Gray8 };
+  return {
+    groupBytes: 1,
+    pixelsPerGroup: 1,
+    kind: PixelKind.Gray8,
+    adobeRgb: false,
+  };
 }
 
 /**
@@ -501,7 +569,7 @@ function decodePage(
         };
   };
 
-  const { groupBytes, pixelsPerGroup, kind } = geom;
+  const { groupBytes, pixelsPerGroup, kind, adobeRgb } = geom;
   const rowStride = width * samplesPerPixel * bytesPerSample;
   // Each line is this many RLE color values (1 per pixel, or ceil(width/8) for
   // 1-bit packing). Trailing padding pixels in the last group are clamped off.
@@ -530,7 +598,7 @@ function decodePage(
           if (p + groupBytes > bytes.length) {
             return result(undefined);
           }
-          pixels = expandGroup(bytes, p, kind, row, pixels, width);
+          pixels = expandGroup(bytes, p, kind, row, pixels, width, adobeRgb);
           p += groupBytes;
         }
       } else {
@@ -540,7 +608,7 @@ function decodePage(
           return result(undefined);
         }
         for (let i = 0; i < run && groups < groupsPerRow; i++, groups++) {
-          pixels = expandGroup(bytes, p, kind, row, pixels, width);
+          pixels = expandGroup(bytes, p, kind, row, pixels, width, adobeRgb);
         }
         p += groupBytes;
       }
@@ -565,6 +633,11 @@ function decodePage(
  * six bytes at `pixels * 6` (R,G,B each big-endian). 1-bit kinds unpack up to 8
  * pixels (MSB-first) from the single byte, the last group's trailing bits
  * clamped off by `width`.
+ *
+ * `adobeRgb` (only set for `Rgb`/`Rgb16` AdobeRGB pages) routes the RGB sample
+ * through the ICC AdobeRGB→sRGB transform (`applyIccRgb`) before it is written,
+ * so the stored buffer is sRGB. For all other kinds (and sRGB/device-RGB pages)
+ * it is false and the bytes pass through unchanged.
  */
 function expandGroup(
   bytes: Buffer,
@@ -572,7 +645,8 @@ function expandGroup(
   kind: PixelKind,
   row: Uint8Array,
   pixels: number,
-  width: number
+  width: number,
+  adobeRgb = false
 ): number {
   switch (kind) {
     case PixelKind.Gray1:
@@ -596,18 +670,44 @@ function expandGroup(
       return pixels + 1;
     }
     case PixelKind.Rgb: {
-      // 8-bit RGB preserved as-is into the 3-byte-per-pixel row.
+      // 8-bit RGB. AdobeRGB → colorimetric sRGB conversion; sRGB/device-RGB pass
+      // through as-is into the 3-byte-per-pixel row.
       const o = pixels * 3;
-      row[o] = bytes[off] ?? 0;
-      row[o + 1] = bytes[off + 1] ?? 0;
-      row[o + 2] = bytes[off + 2] ?? 0;
+      let r = bytes[off] ?? 0;
+      let g = bytes[off + 1] ?? 0;
+      let b = bytes[off + 2] ?? 0;
+      if (adobeRgb) {
+        [r, g, b] = applyIccRgb([r, g, b], ADOBE_RGB_PROFILE, SRGB_PROFILE, 255);
+      }
+      row[o] = r;
+      row[o + 1] = g;
+      row[o + 2] = b;
       return pixels + 1;
     }
     case PixelKind.Rgb16: {
-      // 48-bit RGB (16-bit big-endian channels): keep all six source bytes
-      // big-endian (R,G,B each high byte first), preserving full precision for
-      // reassembly into three uint16 samples by the result step.
+      // 48-bit RGB (16-bit big-endian channels). AdobeRGB → 16-bit sRGB at full
+      // precision; sRGB/device-RGB keep all six source bytes big-endian (R,G,B
+      // each high byte first) for reassembly into uint16 samples by the result
+      // step.
       const o = pixels * 6;
+      if (adobeRgb) {
+        const r16 = ((bytes[off] ?? 0) << 8) | (bytes[off + 1] ?? 0);
+        const g16 = ((bytes[off + 2] ?? 0) << 8) | (bytes[off + 3] ?? 0);
+        const b16 = ((bytes[off + 4] ?? 0) << 8) | (bytes[off + 5] ?? 0);
+        const [r, g, b] = applyIccRgb(
+          [r16, g16, b16],
+          ADOBE_RGB_PROFILE,
+          SRGB_PROFILE,
+          65535
+        );
+        row[o] = (r >>> 8) & 0xff;
+        row[o + 1] = r & 0xff;
+        row[o + 2] = (g >>> 8) & 0xff;
+        row[o + 3] = g & 0xff;
+        row[o + 4] = (b >>> 8) & 0xff;
+        row[o + 5] = b & 0xff;
+        return pixels + 1;
+      }
       row[o] = bytes[off] ?? 0;
       row[o + 1] = bytes[off + 1] ?? 0;
       row[o + 2] = bytes[off + 2] ?? 0;
