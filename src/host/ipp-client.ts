@@ -39,6 +39,7 @@ import {
   operationGroup,
   jobGroup,
   printerGroup,
+  subscriptionGroup,
   type IppRequest,
   type IppResponse,
 } from '../ipp/message.js';
@@ -456,6 +457,140 @@ export class IppClient {
       [integerAttr('job-id', jobId)],
       jobAttrs
     );
+    return this.send(request);
+  }
+
+  /**
+   * Create-Printer-Subscriptions (0x0016) — RFC 3995 §7.1: subscribe to printer
+   * event-notifications in PULL mode (RFC 3996 ippget). `events` is the
+   * `notify-events` keyword set (e.g. `['job-completed']`); `leaseDuration` (s)
+   * sets the requested lease (default applied when omitted). The notify-* travel
+   * in a subscription-attributes group (tag 0x06). The response carries the
+   * granted notify-subscription-id + notify-lease-duration. Pull the queued
+   * events later with getNotifications(subId).
+   */
+  async createPrinterSubscriptions(
+    events: string[],
+    options: { leaseDuration?: number } = {}
+  ): Promise<IppResponse> {
+    const subAttrs: IppAttribute[] = [
+      keywordAttr('notify-events', ...events),
+      keywordAttr('notify-pull-method', 'ippget'),
+    ];
+    if (options.leaseDuration !== undefined) {
+      subAttrs.push(integerAttr('notify-lease-duration', options.leaseDuration));
+    }
+    const request = this.baseRequest(
+      OperationIds.CREATE_PRINTER_SUBSCRIPTIONS
+    );
+    request.groups.push(subscriptionGroup(subAttrs));
+    return this.send(request);
+  }
+
+  /**
+   * Create-Job-Subscriptions (0x0017) — RFC 3995 §7.2: like
+   * createPrinterSubscriptions, but the subscription is scoped to a single job
+   * via `notify-job-id`, so it only sees events for that job.
+   */
+  async createJobSubscriptions(
+    jobId: number,
+    events: string[],
+    options: { leaseDuration?: number } = {}
+  ): Promise<IppResponse> {
+    const subAttrs: IppAttribute[] = [
+      keywordAttr('notify-events', ...events),
+      keywordAttr('notify-pull-method', 'ippget'),
+    ];
+    if (options.leaseDuration !== undefined) {
+      subAttrs.push(integerAttr('notify-lease-duration', options.leaseDuration));
+    }
+    const request = this.baseRequest(OperationIds.CREATE_JOB_SUBSCRIPTIONS, [
+      integerAttr('notify-job-id', jobId),
+    ]);
+    request.groups.push(subscriptionGroup(subAttrs));
+    return this.send(request);
+  }
+
+  /**
+   * Get-Subscriptions (0x0019) — RFC 3995 §7.6: list the printer's live
+   * subscriptions, each in its own subscription-attributes group. Pass `jobId`
+   * to filter to a job, or `mine`/`user` to restrict to one user's subscriptions.
+   */
+  async getSubscriptions(
+    options: { jobId?: number; mine?: boolean; user?: string } = {}
+  ): Promise<IppResponse> {
+    const opAttrs: IppAttribute[] = [];
+    if (options.jobId !== undefined) {
+      opAttrs.push(integerAttr('notify-job-id', options.jobId));
+    }
+    if (options.mine) {
+      opAttrs.push(booleanAttr('my-subscriptions', true));
+    }
+    if (options.user !== undefined) {
+      opAttrs.push(nameWithoutLangAttr('requesting-user-name', options.user));
+    }
+    const request = this.baseRequest(OperationIds.GET_SUBSCRIPTIONS, opAttrs);
+    return this.send(request);
+  }
+
+  /**
+   * Get-Subscription-Attributes (0x0018) — RFC 3995 §7.5: fetch one
+   * subscription's notify-* attributes by id. Unknown id → not-found.
+   */
+  async getSubscriptionAttributes(subId: number): Promise<IppResponse> {
+    const request = this.baseRequest(
+      OperationIds.GET_SUBSCRIPTION_ATTRIBUTES,
+      [integerAttr('notify-subscription-id', subId)]
+    );
+    return this.send(request);
+  }
+
+  /**
+   * Get-Notifications (0x001C) — RFC 3996 §10: PULL (drain) the events queued
+   * for `subId` (or several ids). Returns one event-notification group (tag
+   * 0x07) per pending event; a second call with no new events returns none
+   * (drain-on-read). Unknown id → not-found.
+   */
+  async getNotifications(
+    subId: number | number[]
+  ): Promise<IppResponse> {
+    const ids = Array.isArray(subId) ? subId : [subId];
+    const request = this.baseRequest(OperationIds.GET_NOTIFICATIONS, [
+      integersAttr('notify-subscription-ids', ...ids),
+    ]);
+    return this.send(request);
+  }
+
+  /**
+   * Renew-Subscription (0x001A) — RFC 3995 §7.3: extend a subscription's lease.
+   * `leaseDuration` (s) is the requested new lease; the granted value comes back
+   * in the subscription-attributes group. Unknown id → not-found.
+   */
+  async renewSubscription(
+    subId: number,
+    options: { leaseDuration?: number } = {}
+  ): Promise<IppResponse> {
+    const subAttrs: IppAttribute[] = [];
+    if (options.leaseDuration !== undefined) {
+      subAttrs.push(integerAttr('notify-lease-duration', options.leaseDuration));
+    }
+    const request = this.baseRequest(OperationIds.RENEW_SUBSCRIPTION, [
+      integerAttr('notify-subscription-id', subId),
+    ]);
+    if (subAttrs.length > 0) {
+      request.groups.push(subscriptionGroup(subAttrs));
+    }
+    return this.send(request);
+  }
+
+  /**
+   * Cancel-Subscription (0x001B) — RFC 3995 §7.4: remove a subscription by id.
+   * Unknown id → not-found.
+   */
+  async cancelSubscription(subId: number): Promise<IppResponse> {
+    const request = this.baseRequest(OperationIds.CANCEL_SUBSCRIPTION, [
+      integerAttr('notify-subscription-id', subId),
+    ]);
     return this.send(request);
   }
 

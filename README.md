@@ -118,7 +118,7 @@ ippfind _ipps._tcp                 # or: dns-sd -B _ipps._tcp
 
 ```bash
 npm install
-npm test        # vitest: codec round-trip, decoder, formats, raster-info, buffer reader, mDNS, Get-Jobs, Get-Job-Attributes, Cancel-Job, Purge-Jobs, Cancel-My-Jobs, Hold/Release-Job, Restart-Job, job-hold-until, print Job Template attrs (print-color-mode/quality/sides/orientation/media), page-ranges (codec round-trip + parse/echo + render filter), number-up (grid/composite helpers + parse/echo/advertise + N-up render), Pause/Resume/Identify-Printer, Set-Printer/Job-Attributes, Create/Send/Close multi-doc, requested-attributes
+npm test        # vitest: codec round-trip, decoder, formats, raster-info, buffer reader, mDNS, Get-Jobs, Get-Job-Attributes, Cancel-Job, Purge-Jobs, Cancel-My-Jobs, Hold/Release-Job, Restart-Job, job-hold-until, print Job Template attrs (print-color-mode/quality/sides/orientation/media), page-ranges (codec round-trip + parse/echo + render filter), number-up (grid/composite helpers + parse/echo/advertise + N-up render), Pause/Resume/Identify-Printer, Set-Printer/Job-Attributes, Create/Send/Close multi-doc, event-notification subscriptions (RFC 3995/3996 pull-mode: Create-*-Subscriptions/Get-Subscription(s)/Renew/Cancel-Subscription/Get-Notifications + 0x06/0x07 codec round-trip), requested-attributes
 ```
 
 **Runtime dependency:** `bonjour-service` provides the mDNS/DNS-SD responder
@@ -363,6 +363,71 @@ npx tsx src/index.ts scenario   # run the scenarios
   throws. **No-auth caveat:** a real IPP host gates this behind the job owner's /
   operator's policy; this emulator has no auth layer, so it applies the writes
   unconditionally.
+- **Event notifications in PULL mode** (RFC 3995 subscriptions + RFC 3996
+  `ippget` pull delivery) — a client **subscribes** to printer/job events,
+  **prints**, then **pulls** the queued events with `Get-Notifications`. There is
+  **no outbound push**: this is pull-only (`ippget`), so no `notify-recipient-uri`
+  and no real network delivery. The operations (`ipp/operations/*subscription*`,
+  `get-notifications.ts`) are backed by `printer/subscription-manager.ts`
+  (Subscription objects, each with its own event queue) and wired in
+  `printer/ipp-printer.ts`, which records events by **diffing job/printer state
+  before vs. after each operation** (so every job-running path — Print-Job,
+  Send-Document/Close-Job, Release/Restart-Job, Resume-Printer — feeds one
+  central event source, synchronously).
+  - **Operation ids** (from RFC 3995 §13.1 / RFC 3996 §11.1):
+    `Create-Printer-Subscriptions` **0x0016**, `Create-Job-Subscriptions`
+    **0x0017**, `Get-Subscription-Attributes` **0x0018**, `Get-Subscriptions`
+    **0x0019**, `Renew-Subscription` **0x001A**, `Cancel-Subscription`
+    **0x001B**, `Get-Notifications` **0x001C**.
+  - **Codec**: subscriptions/events ride two new delimiter tags —
+    **subscription-attributes-tag = 0x06** (RFC 3995) and
+    **event-notification-attributes-tag = 0x07** (RFC 3996). The codec treats any
+    delimiter tag in `0x00–0x07` as a group separator (the decoder keys off
+    `DelimiterTags`), so both pass through; a create/renew request carries its
+    `notify-*` in a 0x06 group, and `Get-Notifications` returns **one 0x07 group
+    per event**.
+  - **Supported events** (`notify-events-supported`): `job-created`,
+    `job-completed`, `job-state-changed`, `job-stopped`, `printer-state-changed`,
+    `printer-stopped`. The event sources are the job lifecycle
+    (created → completed/canceled/aborted) and `Pause-Printer`/`Resume-Printer`
+    (printer-state-changed → `stopped`/`idle`). A `Print-Job` that runs straight
+    to completion records `job-created`, `job-state-changed`, and `job-completed`.
+  - **`Create-Printer-Subscriptions` / `Create-Job-Subscriptions`** parse the
+    0x06 group (`notify-events`, `notify-pull-method`, `notify-lease-duration`),
+    create the subscription(s), and return a 0x06 group with the granted
+    `notify-subscription-id` + `notify-lease-duration`. `notify-pull-method` must
+    be `ippget`; a non-`ippget` method or a present `notify-recipient-uri` (push)
+    → `client-error-attributes-or-values-not-supported` (no subscription
+    created). An unsupported `notify-events` keyword is dropped and the op returns
+    `successful-ok-ignored-or-substituted-attributes`. `Create-Job-Subscriptions`
+    additionally reads `notify-job-id`, scoping the subscription to that job.
+  - **`Get-Subscription-Attributes`** (by `notify-subscription-id`) returns the
+    subscription's `notify-*`; unknown/expired → `client-error-not-found`.
+    **`Get-Subscriptions`** lists each subscription as its own 0x06 group,
+    optionally filtered by `notify-job-id` / `my-subscriptions`.
+    **`Cancel-Subscription`** removes it (unknown → not-found).
+    **`Renew-Subscription`** extends the lease and returns the granted duration.
+  - **`Get-Notifications`** (`ippget`): names one or more
+    `notify-subscription-id`s, **drains** each subscription's queued events, and
+    returns one 0x07 group per event carrying `notify-subscription-id`,
+    `notify-sequence-number`, `notify-subscribed-event`, `printer-up-time`, and
+    the relevant `job-id` + `job-state` (job events) / `printer-state` (printer
+    events). An unknown/expired id → `client-error-not-found`.
+  - **Drain semantics: DRAIN-ON-READ.** `Get-Notifications` returns the events
+    queued since the previous pull for that subscription and **empties** the
+    queue; a second call with no new events returns **no event groups**. The
+    per-subscription `notify-sequence-number` keeps advancing monotonically
+    across drains. Each queue is capped at `notify-max-events-supported` (100) —
+    the oldest event is dropped when full (sequence still advances).
+  - **Lease / expiry — NO timers.** `notify-lease-duration` defaults to **3600s**
+    (advertised range `0–86400` via `notify-lease-duration-supported`, a
+    rangeOfInteger; a requested **0** means "as long as the printer grants" → the
+    max, treated as no-expiry). A lease is an **absolute `expiresAt`** that is
+    pruned **lazily on access** (every `get`/`list`/`recordEvent`/`drain` first
+    drops expired subscriptions) — there is **no `setInterval`/`setTimeout`**, so
+    `vitest run` exits on its own. The printer also advertises
+    `notify-pull-method-supported=ippget`, `notify-schemes-supported=ippget`, and
+    `printer-up-time` (RFC 8011, seconds since the printer object started).
 - PWG-Raster / Apple-URF page-header parsing — `documents/raster-info.ts` walks
   the fixed-layout page headers (PWG `RaS2`, URF `UNIRAST\0`), counting pages
   and reading each page's pixel width/height + resolution; the PackBits line
