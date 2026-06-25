@@ -48,6 +48,13 @@ export const OperationIds = {
   RENEW_SUBSCRIPTION: 0x001a,
   CANCEL_SUBSCRIPTION: 0x001b,
   GET_NOTIFICATIONS: 0x001c,
+  /**
+   * Send-Notifications (RFC 3995 §11.1, 0x001D): the PUSH delivery operation the
+   * printer POSTs to a subscription's `notify-recipient-uri`. The emulator only
+   * SENDS these (outbound, loopback-only); it does not accept them as an
+   * inbound operation, so it is absent from the dispatcher's HANDLERS table.
+   */
+  SEND_NOTIFICATIONS: 0x001d,
 } as const;
 
 export type OperationId = (typeof OperationIds)[keyof typeof OperationIds];
@@ -336,10 +343,13 @@ export const NOTIFY_PULL_METHOD_IPPGET = 'ippget';
 
 /**
  * Notification delivery schemes advertised in `notify-schemes-supported` (RFC
- * 3995). `ippget` is the pull scheme; this emulator does no outbound push, so
- * that is the entire set.
+ * 3995 §5.3.4 / §11). `ippget` is the pull scheme (Get-Notifications). `http` is
+ * the PUSH scheme: a subscription may supply a `notify-recipient-uri` and the
+ * printer POSTs Send-Notifications to it — but ONLY for a LOCAL-ONLY (loopback)
+ * `http://` recipient (the same anti-SSRF allowlist as Print-URI; see
+ * transport/local-only.ts). A non-local recipient is rejected at create time.
  */
-export const NOTIFY_SCHEMES_SUPPORTED = ['ippget'] as const;
+export const NOTIFY_SCHEMES_SUPPORTED = ['ippget', 'http'] as const;
 
 /**
  * notify-lease-duration (RFC 3995 §5.3.5) bounds, in seconds. A subscription's
