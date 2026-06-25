@@ -378,22 +378,33 @@ npx tsx src/index.ts scenario   # run the scenarios
   to luma: 8-bit grayscale (`sGray`/device-gray) passes through; **1-bit**
   (sGray/gray/black) unpacks 8 pixels per byte MSB-first, honoring cupsWidth so
   trailing padding bits in the last byte of a row are ignored (additive sGray:
-  0=black, 1=white; subtractive black `K`: 1=black, 0=white); **16-bit**
-  grayscale downsamples to the big-endian high byte; **sRGB24 / device-RGB /
-  AdobeRGB** is preserved as 8-bit RGB (color output); **48-bit RGB** (16-bit
-  channels) is downsampled to 8-bit per channel (high byte) and likewise
-  preserved as color; **CMYK now renders to color** (8-bit truecolor) instead of
+  0=black, 1=white; subtractive black `K`: 1=black, 0=white); **16-bit
+  grayscale now preserves full precision** — the two big-endian source bytes are
+  combined into a uint16 sample (no high-byte downsample) and emitted as a **true
+  16-bit PNG**; **sRGB24 / device-RGB / AdobeRGB** is preserved as 8-bit RGB
+  (color output); **48-bit RGB** (16-bit channels) is likewise **preserved at full
+  16-bit precision** per channel and emitted as a **16-bit truecolor PNG** (no
+  longer downsampled); **CMYK renders to color** (8-bit truecolor) instead of
   grayscale — each pixel is converted CMYK→RGB with the naive subtractive model
   `R=round(255*(1-C/255)*(1-K/255))`, `G` from `M`, `B` from `Y` (3 bytes/pixel);
   **64-bit CMYK** (16-bit channels) takes the high byte of each of C,M,Y,K first,
-  then the same conversion (the grayscale/1-bit paths are unchanged). The
-  CMYK→RGB conversion is purely colorimetric-naive: ICC/colorimetric profiles are
-  still not applied (sRGB and AdobeRGB are treated identically, and CMYK is not
-  device-link/profile-managed). `utils/png.ts` then writes an
-  8-bit-grayscale PNG (color-type 0) for gray pages or an 8-bit truecolor PNG
-  (color-type 2) for color pages — signature + IHDR + deflated IDAT scanlines +
-  IEND, each chunk CRC-32'd — using only Node's built-in `zlib` — no image
-  dependencies. Rendering is **opt-in**: set the `RASTER_OUT`
+  then the same conversion — **CMYK is emitted as 8-bit RGB regardless of source
+  depth** (the naive CMYK→RGB conversion is already lossy, so widening to 16-bit
+  adds no fidelity) (the grayscale/1-bit paths are unchanged). The CMYK→RGB
+  conversion is purely colorimetric-naive: ICC/colorimetric profiles are still not
+  applied (sRGB and AdobeRGB are treated identically, and CMYK is not
+  device-link/profile-managed). `utils/png.ts` then writes a PNG matching the
+  page's depth: 8-bit grayscale (color-type 0) / 8-bit truecolor (color-type 2)
+  for 8-bit pages, or **16-bit grayscale / 16-bit truecolor** (bit-depth 16, via
+  `encodeGray16Png` / `encodeRgb16Png`, samples stored big-endian per the PNG
+  spec) for 16-bit pages — signature + IHDR + deflated IDAT scanlines + IEND, each
+  chunk CRC-32'd — using only Node's built-in `zlib` — no image dependencies.
+  `orientation-requested` and `page-ranges` work on 16-bit pages unchanged (the
+  rotate helper is byte-generic over 2-/6-bytes-per-pixel); `print-color-mode=mono`
+  on a 16-bit color page computes luma at full 16-bit precision and emits a 16-bit
+  gray PNG. **One documented downgrade**: `number-up` tiling downsamples 16-bit
+  pages to 8-bit (high byte) before compositing, so N-up sheets are always 8-bit
+  (16-bit fidelity is preserved on the one-PNG-per-page path, not in N-up). Rendering is **opt-in**: set the `RASTER_OUT`
   env var or pass `--raster-out <prefix>` on the emulator/demo, and a completed
   PWG/URF job writes one PNG per page as `<prefix>-job<id>-p<n>.png` (logged via
   the Logger). It is **off by default**, so normal runs/tests/CI write nothing,
@@ -457,14 +468,15 @@ npx tsx src/index.ts scenario   # run the scenarios
   (`documents/document.ts` `PassthroughHandler`). PWG/URF pixel
   decode covers 1-bit (gray/black), 8-bit grayscale, 16-bit grayscale,
   sRGB24/device-RGB/AdobeRGB, 48-bit RGB, and CMYK (8- and 16-bit). **RGB and
-  CMYK color spaces render to color PNG (8-bit truecolor)** (CMYK via the naive
-  CMYK→RGB conversion above); grayscale/1-bit stay 8-bit grayscale;
-  48-bit RGB and 64-bit CMYK are downsampled to 8-bit per channel (see above).
-  Remaining TODO: 16-bit-per-channel *output* fidelity (48-bit RGB / 64-bit CMYK
-  are downsampled to 8-bit), ICC/colorimetric profiles (no white-point/gamma
-  management — sRGB and AdobeRGB are treated identically, and CMYK→RGB is naive
-  rather than profile-managed), and exotic colorSpaces (CIE Lab/XYZ,
-  DeviceN/multi-ink separations) which fall back to the byte-width heuristic
-  rather than being color-managed.
+  CMYK color spaces render to color PNG** (CMYK via the naive CMYK→RGB conversion
+  above, always 8-bit); grayscale/1-bit stay 8-bit grayscale. **16-bit grayscale
+  and 48-bit RGB now emit true 16-bit PNGs** (bit-depth 16, full precision — no
+  8-bit downsample). Remaining TODO: 16-bit *output* for CMYK (64-bit CMYK is
+  still emitted as 8-bit RGB — its CMYK→RGB conversion is already lossy);
+  ICC/colorimetric profiles (no white-point/gamma management — sRGB and AdobeRGB
+  are treated identically, and CMYK→RGB is naive rather than profile-managed);
+  `number-up` tiling of 16-bit pages downsamples to 8-bit before compositing; and
+  exotic colorSpaces (CIE Lab/XYZ, DeviceN/multi-ink separations) which fall back
+  to the byte-width heuristic rather than being color-managed.
 - Unknown operations — answered with `server-error-operation-not-supported`.
 ```

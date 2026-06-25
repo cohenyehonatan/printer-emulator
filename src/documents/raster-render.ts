@@ -5,14 +5,30 @@
  * (`utils/png.ts`) to the print path: given a finished raster job, decode each
  * page and write one PNG per page to a caller-supplied path prefix. Color (RGB)
  * pages go through the truecolor encoder; grayscale pages through the grayscale
- * encoder. This is the emulator "actually printing" — a submitted raster job
- * lands as visible images on disk.
+ * encoder. 16-bit grayscale and 48-bit RGB pages keep their full precision and
+ * route to the 16-bit encoders (`encodeGray16Png` / `encodeRgb16Png`), emitting
+ * true bit-depth-16 PNGs. This is the emulator "actually printing" — a submitted
+ * raster job lands as visible images on disk.
  *
  * `print-color-mode=monochrome` (PWG 5100.13) actually changes the output: when
  * `forceGrayscale` is set, a decoded *color* page is converted to grayscale
  * (Rec. 601 luma) and written through the grayscale encoder, so a color source
  * prints monochrome. `color`/`auto` leave the source untouched (color → color,
- * gray → gray). See rgbToLuma().
+ * gray → gray). See rgbToLuma() / rgb16ToLuma(). A 16-bit color page forced to
+ * monochrome stays 16-bit: luma is computed at full precision and emitted as a
+ * 16-bit gray PNG (no downgrade to 8-bit).
+ *
+ * Bit depth (RFC-agnostic, sourced from the raster header): 16-bit grayscale and
+ * 48-bit RGB pages carry full 16-bit precision end to end. The rotate/composite
+ * helpers are byte-generic (they operate on the pixel buffer + bytesPerPixel), so
+ * a 16-bit page is carried as big-endian sample bytes with bytesPerPixel 2
+ * (gray16) or 6 (rgb16) — orientation and page-ranges work on 16-bit pages
+ * unchanged, and the per-page emit step routes a 16-bit page to encodeGray16Png /
+ * encodeRgb16Png. One documented downgrade: `number-up` tiling DOWNSAMPLES 16-bit
+ * pages to 8-bit (high byte) before compositing, so N-up sheets are always 8-bit
+ * (the tiling scales/promotes heterogeneous pages into one sheet; keeping it
+ * 8-bit avoids a depth cross-product in the nearest-neighbor blit). 16-bit
+ * fidelity is therefore preserved on the one-PNG-per-page path, not in N-up.
  *
  * `orientation-requested` (RFC 8011 §5.2.10) also changes the output: the
  * decoded page's pixel buffer is rotated before encoding — portrait (3) = no
@@ -52,7 +68,12 @@
 
 import { writeFileSync } from 'fs';
 import { decodeRasterPages } from './raster-decode.js';
-import { encodeGrayPng, encodeRgbPng } from '../utils/png.js';
+import {
+  encodeGrayPng,
+  encodeRgbPng,
+  encodeGray16Png,
+  encodeRgb16Png,
+} from '../utils/png.js';
 import { OrientationRequested } from '../ipp/constants.js';
 import type { OrientationRequestedValue } from '../ipp/constants.js';
 import type { PageRange } from '../ipp/job-template.js';
@@ -126,16 +147,34 @@ export function renderRasterJob(
       if (!inSelectedRanges(pageNum, pageRanges)) continue;
       // monochrome mode: a color page is reduced to luma and emitted grayscale.
       const emitGray = !page.isColor || forceGrayscale;
-      // Pick the source pixel buffer + samples-per-pixel for the emit path:
-      // monochrome forces color→luma (1 bpp); else color stays RGB (3 bpp),
-      // gray stays gray (1 bpp).
       const isRgb = page.isColor && !emitGray;
-      const bytesPerPixel = isRgb ? 3 : 1;
-      const sourcePixels = isRgb
-        ? page.rgb
-        : page.isColor
-          ? rgbToLuma(page.rgb, page.widthPx * page.heightPx)
-          : page.gray;
+      const is16 = page.bitDepth === 16;
+      const pixelCount = page.widthPx * page.heightPx;
+
+      // Resolve the emit-path pixel buffer as big-endian sample BYTES so the
+      // byte-generic rotate/composite helpers handle both depths uniformly:
+      //   8-bit:  1 byte/sample → bytesPerPixel 1 (gray) / 3 (rgb).
+      //   16-bit: 2 bytes/sample (big-endian) → bytesPerPixel 2 (gray) / 6 (rgb).
+      // monochrome forces color→luma (1 sample/pixel) at the page's own depth.
+      const bytesPerSample = is16 ? 2 : 1;
+      const samplesPerPixel = isRgb ? 3 : 1;
+      const bytesPerPixel = samplesPerPixel * bytesPerSample;
+
+      let sourcePixels: Uint8Array;
+      if (is16) {
+        const samples = isRgb
+          ? page.rgb16
+          : page.isColor
+            ? rgb16ToLuma(page.rgb16, pixelCount)
+            : page.gray16;
+        sourcePixels = u16ToBigEndianBytes(samples);
+      } else {
+        sourcePixels = isRgb
+          ? page.rgb
+          : page.isColor
+            ? rgbToLuma(page.rgb, pixelCount)
+            : page.gray;
+      }
 
       // Rotate the page per orientation-requested before encoding. 90°/270°
       // swap width/height; 0° is a cheap pass-through.
@@ -153,6 +192,7 @@ export function renderRasterJob(
         height: rotated.height,
         bytesPerPixel,
         isRgb,
+        bitDepth: page.bitDepth,
         pixels: rotated.pixels,
         dpi: page.dpi,
       });
@@ -180,9 +220,14 @@ interface PreparedPage {
   index: number;
   width: number;
   height: number;
-  /** 1 for grayscale, 3 for RGB. */
+  /**
+   * Bytes per pixel in `pixels`: 1 (gray8), 3 (rgb8), 2 (gray16), 6 (rgb16).
+   * For 16-bit pages the samples are stored big-endian (2 bytes/sample).
+   */
   bytesPerPixel: number;
   isRgb: boolean;
+  /** Per-sample bit depth (8 or 16); selects the 8- vs 16-bit PNG encoder. */
+  bitDepth: 8 | 16;
   pixels: Uint8Array;
   dpi: number;
 }
@@ -203,9 +248,7 @@ function emitPerPage(
   for (const p of prepared) {
     const path = `${prefix}-job${jobId}-p${p.index}.png`;
     try {
-      const png = p.isRgb
-        ? encodeRgbPng(p.width, p.height, p.pixels)
-        : encodeGrayPng(p.width, p.height, p.pixels);
+      const png = encodePreparedPng(p.width, p.height, p.isRgb, p.bitDepth, p.pixels);
       writeFileSync(path, png);
       written.push({
         page: p.index,
@@ -251,7 +294,9 @@ function emitNUp(
   let sheetIndex = 0;
   for (let start = 0; start < prepared.length; start += n) {
     sheetIndex++;
-    const batch = prepared.slice(start, start + n);
+    // N-up sheets are always 8-bit: downsample any 16-bit page (high byte)
+    // before compositing so the nearest-neighbor blit never crosses depths.
+    const batch = prepared.slice(start, start + n).map(downsampleTo8Bit);
     const sheet = compositeNUp(batch, grid);
     const path = `${prefix}-job${jobId}-p${sheetIndex}.png`;
     try {
@@ -533,4 +578,95 @@ export function rgbToLuma(rgb: Uint8Array, pixels: number): Uint8Array {
     gray[i] = Math.round(0.299 * r + 0.587 * g + 0.114 * b) & 0xff;
   }
   return gray;
+}
+
+/**
+ * Convert a 16-bit RGB sample buffer (3 uint16/pixel) to a 16-bit grayscale
+ * buffer of `pixels` samples using the Rec. 601 luma weights (0.299 R, 0.587 G,
+ * 0.114 B), clamped to the 0..65535 range. Missing trailing channels are treated
+ * as 0. Used to force a 16-bit color page to grayscale for
+ * `print-color-mode=monochrome` without dropping to 8-bit precision.
+ */
+export function rgb16ToLuma(rgb: Uint16Array, pixels: number): Uint16Array {
+  const gray = new Uint16Array(pixels);
+  for (let i = 0; i < pixels; i++) {
+    const r = rgb[i * 3] ?? 0;
+    const g = rgb[i * 3 + 1] ?? 0;
+    const b = rgb[i * 3 + 2] ?? 0;
+    const v = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
+    gray[i] = v < 0 ? 0 : v > 0xffff ? 0xffff : v;
+  }
+  return gray;
+}
+
+/**
+ * Pack a uint16 sample buffer into big-endian bytes (high byte first) — the form
+ * the byte-generic rotate/composite pipeline and the 16-bit PNG encoders both
+ * consume. The result is twice the input length.
+ */
+function u16ToBigEndianBytes(samples: Uint16Array): Uint8Array {
+  const out = new Uint8Array(samples.length * 2);
+  for (let i = 0; i < samples.length; i++) {
+    out[i * 2] = (samples[i] >>> 8) & 0xff;
+    out[i * 2 + 1] = samples[i] & 0xff;
+  }
+  return out;
+}
+
+/**
+ * Reassemble big-endian sample bytes (high byte first) back into uint16 samples
+ * — the inverse of u16ToBigEndianBytes, used at encode time to hand the 16-bit
+ * PNG encoders their `Uint16Array`. A trailing odd byte (never produced here) is
+ * ignored.
+ */
+function bigEndianBytesToU16(bytes: Uint8Array): Uint16Array {
+  const out = new Uint16Array(bytes.length >> 1);
+  for (let i = 0; i < out.length; i++) {
+    out[i] = ((bytes[i * 2] ?? 0) << 8) | (bytes[i * 2 + 1] ?? 0);
+  }
+  return out;
+}
+
+/**
+ * Encode a prepared page's pixel buffer to a PNG, routing by color + bit depth:
+ * 8-bit → encodeGrayPng / encodeRgbPng (1/3 bytes/pixel); 16-bit → reassemble the
+ * big-endian sample bytes into uint16 and use encodeGray16Png / encodeRgb16Png.
+ */
+function encodePreparedPng(
+  width: number,
+  height: number,
+  isRgb: boolean,
+  bitDepth: 8 | 16,
+  pixels: Uint8Array
+): Buffer {
+  if (bitDepth === 16) {
+    const samples = bigEndianBytesToU16(pixels);
+    return isRgb
+      ? encodeRgb16Png(width, height, samples)
+      : encodeGray16Png(width, height, samples);
+  }
+  return isRgb
+    ? encodeRgbPng(width, height, pixels)
+    : encodeGrayPng(width, height, pixels);
+}
+
+/**
+ * Downsample a prepared page to 8-bit (high byte of each big-endian 16-bit
+ * sample), returning a new PreparedPage with bytesPerPixel 1 (gray) / 3 (rgb)
+ * and bitDepth 8. An already-8-bit page is returned unchanged. Used by the N-up
+ * path so heterogeneous-depth batches composite at a single (8-bit) depth.
+ */
+function downsampleTo8Bit(page: PreparedPage): PreparedPage {
+  if (page.bitDepth === 8) return page;
+  const samples = page.pixels.length >> 1;
+  const out = new Uint8Array(samples);
+  for (let i = 0; i < samples; i++) {
+    out[i] = page.pixels[i * 2] ?? 0; // high byte
+  }
+  return {
+    ...page,
+    bytesPerPixel: page.isRgb ? 3 : 1,
+    bitDepth: 8,
+    pixels: out,
+  };
 }
