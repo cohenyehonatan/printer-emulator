@@ -429,4 +429,69 @@ describe('print-color-mode=monochrome forces grayscale raster output', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('IppPrinter wires print-quality=draft into the render path (half resolution)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pe-job-template-quality-e2e-'));
+    try {
+      // A 4x2 gray page so a 0.5× draft downscale is observable (→ 2x1).
+      const header = pwgPageHeader({
+        width: 4,
+        height: 2,
+        bitsPerColor: 8,
+        bitsPerPixel: 8,
+        bytesPerLine: 4,
+        colorSpace: 18, // sGray
+      });
+      const line = (...px: number[]) => [lineRepeat(1), repeatControl(1), ...px];
+      const gray4x2 = Buffer.concat([
+        Buffer.from('RaS2', 'ascii'),
+        header,
+        Buffer.from([...line(10, 20, 30, 40), ...line(50, 60, 70, 80)]),
+      ]);
+
+      // draft (3) → 0.5× downscale: the 4x2 page lands as a 2x1 PNG.
+      const draftPrinter = new IppPrinter({
+        port: 0,
+        advertise: false,
+        logLevel: 'error',
+        rasterOut: join(dir, 'draft'),
+      });
+      draftPrinter.handleRequest(
+        encode(
+          request(
+            OperationIds.PRINT_JOB,
+            [mimeMediaTypeAttr('document-format', 'image/pwg-raster')],
+            [enumAttr('print-quality', 3)],
+            gray4x2
+          )
+        )
+      );
+      const draftPng = readFileSync(join(dir, 'draft-job1-p1.png'));
+      expect(draftPng.readUInt32BE(16)).toBe(2); // width halved
+      expect(draftPng.readUInt32BE(20)).toBe(1); // height halved
+
+      // high (5) → full resolution: the 4x2 page stays 4x2.
+      const highPrinter = new IppPrinter({
+        port: 0,
+        advertise: false,
+        logLevel: 'error',
+        rasterOut: join(dir, 'high'),
+      });
+      highPrinter.handleRequest(
+        encode(
+          request(
+            OperationIds.PRINT_JOB,
+            [mimeMediaTypeAttr('document-format', 'image/pwg-raster')],
+            [enumAttr('print-quality', 5)],
+            gray4x2
+          )
+        )
+      );
+      const highPng = readFileSync(join(dir, 'high-job1-p1.png'));
+      expect(highPng.readUInt32BE(16)).toBe(4); // full width
+      expect(highPng.readUInt32BE(20)).toBe(2); // full height
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
