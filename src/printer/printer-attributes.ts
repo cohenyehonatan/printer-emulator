@@ -52,6 +52,11 @@ import {
 } from '../ipp/attribute.js';
 import { ValueTags } from '../ipp/constants.js';
 import { JOB_SETTABLE_ATTRIBUTES } from './job.js';
+import {
+  buildMarkerAttributes,
+  DEFAULT_SUPPLIES,
+  type PrinterSupplies,
+} from './printer-supplies.js';
 
 export interface PrinterIdentity {
   name: string;
@@ -143,7 +148,12 @@ export function buildPrinterAttributes(
    * printer object started. Defaults to 0 for bare unit-test contexts that
    * don't track it.
    */
-  upTime = 0
+  upTime = 0,
+  /**
+   * Consumable supply state, surfaced as the `marker-*` printer-description
+   * attributes (ink/toner gauge). Defaults to the static CMYK ink set.
+   */
+  supplies: PrinterSupplies = DEFAULT_SUPPLIES
 ): IppAttribute[] {
   const reasons = stateReasons.length > 0 ? stateReasons : ['none'];
   const version = `${IPP_VERSION_MAJOR}.${IPP_VERSION_MINOR}`;
@@ -354,5 +364,11 @@ export function buildPrinterAttributes(
       NOTIFY_LEASE_DURATION_MAX,
     ]),
     integerAttr('notify-max-events-supported', NOTIFY_MAX_EVENTS),
+    // marker-* supply attributes (RFC 8011 §5.4.30–§5.4.36 / PWG 5100.12): the
+    // ink/toner gauge every real IPP/AirPrint printer advertises. Emitted as
+    // PARALLEL 1setOf arrays (index i across every marker-* list is one supply);
+    // this emulator advertises color, so it models a CMYK ink set. See
+    // printer-supplies.ts for the sentinel rules and parallel-array contract.
+    ...buildMarkerAttributes(supplies),
   ];
 }
