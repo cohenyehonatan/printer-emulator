@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import {
+  createServer,
+  type IncomingMessage,
+  type Server,
+  type ServerResponse,
+} from 'http';
+import { AddressInfo } from 'net';
+import {
   OperationIds,
   StatusCodes,
   JobStates,
@@ -16,6 +23,7 @@ import {
   naturalLanguageAttr,
   integerAttr,
   keywordAttr,
+  uriAttr,
   mimeMediaTypeAttr,
   findAttr,
   firstNumber,
@@ -422,5 +430,168 @@ describe('Codec: subscription (0x06) / event-notification (0x07) groups round-tr
       firstNumber(findAttr(events[0]!.attributes, 'notify-sequence-number'))
     ).toBe(1);
     expect(firstNumber(findAttr(events[0]!.attributes, 'job-id'))).toBe(5);
+  });
+});
+
+/**
+ * Spin up a real local HTTP receiver that records the first POST and resolves a
+ * promise with its decoded IPP body. Listens on 127.0.0.1 (a loopback literal).
+ */
+async function startReceiver(): Promise<{
+  url: string;
+  captured: Promise<{ contentType: string | undefined; body: Buffer }>;
+  close: () => Promise<void>;
+}> {
+  let resolveCaptured!: (c: {
+    contentType: string | undefined;
+    body: Buffer;
+  }) => void;
+  const captured = new Promise<{
+    contentType: string | undefined;
+    body: Buffer;
+  }>((r) => (resolveCaptured = r));
+
+  const server: Server = createServer(
+    (req: IncomingMessage, res: ServerResponse) => {
+      const chunks: Buffer[] = [];
+      req.on('data', (c: Buffer) => chunks.push(c));
+      req.on('end', () => {
+        res.statusCode = 200;
+        res.end();
+        resolveCaptured({
+          contentType: req.headers['content-type'],
+          body: Buffer.concat(chunks),
+        });
+      });
+    }
+  );
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address() as AddressInfo;
+  return {
+    url: `http://127.0.0.1:${port}/notifications`,
+    captured,
+    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+  };
+}
+
+describe('Create-Printer-Subscriptions — PUSH (notify-recipient-uri)', () => {
+  it('accepts a LOCAL recipient + POSTs the event-notification when an event fires', async () => {
+    const recv = await startReceiver();
+    try {
+      const printer = makePrinter();
+
+      // Create a PUSH subscription pointing at the local receiver.
+      const created = send(
+        printer,
+        request(
+          OperationIds.CREATE_PRINTER_SUBSCRIPTIONS,
+          [],
+          [
+            subscriptionGroup([
+              keywordAttr('notify-events', NotifyEvents.JOB_COMPLETED),
+              uriAttr('notify-recipient-uri', recv.url),
+            ]),
+          ]
+        )
+      );
+      expect(created.operationIdOrStatusCode).toBe(StatusCodes.SUCCESSFUL_OK);
+      const subAttrs = subscriptionGroupsOf(created)[0]!.attributes;
+      const subId = firstNumber(findAttr(subAttrs, 'notify-subscription-id'))!;
+      // The create response reports the recipient URI (push), not a pull method.
+      expect(firstString(findAttr(subAttrs, 'notify-recipient-uri'))).toBe(
+        recv.url
+      );
+
+      // Fire an event: a Print-Job drives the job to completed → job-completed.
+      send(
+        printer,
+        request(
+          OperationIds.PRINT_JOB,
+          [mimeMediaTypeAttr('document-format', 'application/pdf')],
+          [],
+          PDF
+        )
+      );
+
+      // The receiver must get an application/ipp Send-Notifications POST.
+      const got = await recv.captured;
+      expect(got.contentType).toBe('application/ipp');
+      const msg = decode(got.body);
+      const ev = msg.groups.filter(
+        (g) => g.tag === DelimiterTags.EVENT_NOTIFICATION_ATTRIBUTES
+      );
+      expect(ev.length).toBeGreaterThanOrEqual(1);
+      const a = ev[0]!.attributes;
+      expect(firstNumber(findAttr(a, 'notify-subscription-id'))).toBe(subId);
+      expect(firstString(findAttr(a, 'notify-subscribed-event'))).toBe(
+        NotifyEvents.JOB_COMPLETED
+      );
+      expect(firstNumber(findAttr(a, 'job-state'))).toBe(JobStates.COMPLETED);
+    } finally {
+      await recv.close();
+    }
+  });
+
+  it('refuses an EXTERNAL recipient URI with uri-scheme-not-supported (no subscription)', () => {
+    const printer = makePrinter();
+    for (const bad of [
+      'http://evil.example.com/hook',
+      'https://localhost/hook',
+      'http://169.254.169.254/latest/meta-data',
+      'http://localhost.evil/hook',
+      'http://localhost@evil/hook',
+    ]) {
+      const res = send(
+        printer,
+        request(
+          OperationIds.CREATE_PRINTER_SUBSCRIPTIONS,
+          [],
+          [
+            subscriptionGroup([
+              keywordAttr('notify-events', NotifyEvents.JOB_COMPLETED),
+              uriAttr('notify-recipient-uri', bad),
+            ]),
+          ]
+        )
+      );
+      expect(res.operationIdOrStatusCode).toBe(
+        StatusCodes.CLIENT_ERROR_URI_SCHEME_NOT_SUPPORTED
+      );
+    }
+    // None of the refused requests created a subscription.
+    const list = send(printer, request(OperationIds.GET_SUBSCRIPTIONS));
+    expect(subscriptionGroupsOf(list).length).toBe(0);
+  });
+
+  it('a push delivery to a dead recipient does not crash job processing', () => {
+    const printer = makePrinter();
+    // Loopback port 1 has no listener: the POST will be refused. The create is
+    // accepted (the URI is local), and the subsequent Print-Job must still run
+    // to completion without throwing.
+    const created = send(
+      printer,
+      request(
+        OperationIds.CREATE_PRINTER_SUBSCRIPTIONS,
+        [],
+        [
+          subscriptionGroup([
+            keywordAttr('notify-events', NotifyEvents.JOB_COMPLETED),
+            uriAttr('notify-recipient-uri', 'http://127.0.0.1:1/dead'),
+          ]),
+        ]
+      )
+    );
+    expect(created.operationIdOrStatusCode).toBe(StatusCodes.SUCCESSFUL_OK);
+
+    const printed = send(
+      printer,
+      request(
+        OperationIds.PRINT_JOB,
+        [mimeMediaTypeAttr('document-format', 'application/pdf')],
+        [],
+        PDF
+      )
+    );
+    expect(printed.operationIdOrStatusCode).toBe(StatusCodes.SUCCESSFUL_OK);
   });
 });
