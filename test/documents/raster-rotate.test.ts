@@ -3,12 +3,15 @@ import {
   renderRasterJob,
   rotatePixels,
   orientationToDegrees,
+  sidesTumbles,
 } from '../../src/documents/raster-render.js';
-import { OrientationRequested } from '../../src/ipp/constants.js';
+import { OrientationRequested, Sides } from '../../src/ipp/constants.js';
+import type { SidesValue } from '../../src/ipp/constants.js';
 import type { Document } from '../../src/documents/document.js';
 import { mkdtempSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { inflateSync } from 'zlib';
 
 /**
  * Read a PNG IHDR's width/height/color-type. (Signature is 8 bytes; IHDR data
@@ -58,6 +61,71 @@ function pwgFromRows(rows: number[][], color: boolean): Buffer {
     header,
     Buffer.from(lines),
   ]);
+}
+
+/**
+ * Build one PWG-Raster page record (header + literal-run scanlines) for `rows`
+ * (one grayscale sample per pixel). Concatenated together after a single `RaS2`
+ * magic, several of these form a multi-page raster blob.
+ */
+function pwgPageRecord(rows: number[][]): Buffer {
+  const width = rows[0].length;
+  const height = rows.length;
+
+  const header = Buffer.alloc(1796);
+  header.writeUInt32BE(300, 276); // dpiX
+  header.writeUInt32BE(300, 280); // dpiY
+  header.writeUInt32BE(width, 372); // cupsWidth
+  header.writeUInt32BE(height, 376); // cupsHeight
+  header.writeUInt32BE(8, 384); // bitsPerColor
+  header.writeUInt32BE(8, 388); // bitsPerPixel
+  header.writeUInt32BE(width, 392); // cupsBytesPerLine
+  header.writeUInt32BE(18, 400); // colorSpace: sGray
+
+  const lines: number[] = [];
+  for (const row of rows) {
+    lines.push(0, width - 1, ...row);
+  }
+  return Buffer.concat([header, Buffer.from(lines)]);
+}
+
+/** A multi-page grayscale PWG blob: `RaS2` magic + one record per page. */
+function pwgMultiPage(pages: number[][][]): Buffer {
+  return Buffer.concat([
+    Buffer.from('RaS2', 'ascii'),
+    ...pages.map(pwgPageRecord),
+  ]);
+}
+
+const PNG_SIGNATURE = Buffer.from([
+  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+]);
+
+/**
+ * Inflate a PNG's IDAT and strip the per-row filter byte, returning the raw
+ * pixel rows as `width × height` grayscale samples (8-bit, 1 byte/pixel).
+ */
+function pngGrayPixels(png: Buffer, width: number, height: number): number[][] {
+  let pos = PNG_SIGNATURE.length;
+  let raw: number[] = [];
+  while (pos + 8 <= png.length) {
+    const length = png.readUInt32BE(pos);
+    const type = png.toString('ascii', pos + 4, pos + 8);
+    const dataStart = pos + 8;
+    if (type === 'IDAT') {
+      raw = Array.from(
+        inflateSync(png.subarray(dataStart, dataStart + length))
+      );
+      break;
+    }
+    pos = dataStart + length + 4;
+  }
+  const rows: number[][] = [];
+  const stride = width + 1; // 1 filter byte + width samples per row
+  for (let y = 0; y < height; y++) {
+    rows.push(raw.slice(y * stride + 1, y * stride + 1 + width));
+  }
+  return rows;
 }
 
 describe('rotatePixels', () => {
@@ -288,6 +356,155 @@ describe('renderRasterJob — orientation rotates the emitted PNG', () => {
       // 2x1 → 1x2 under 90°.
       expect(h.width).toBe(1);
       expect(h.height).toBe(2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('sidesTumbles', () => {
+  it('is true only for two-sided-short-edge', () => {
+    expect(sidesTumbles(Sides.TWO_SIDED_SHORT_EDGE)).toBe(true);
+    expect(sidesTumbles(Sides.TWO_SIDED_LONG_EDGE)).toBe(false);
+    expect(sidesTumbles(Sides.ONE_SIDED)).toBe(false);
+    expect(sidesTumbles(undefined)).toBe(false);
+  });
+});
+
+describe('renderRasterJob — sides tumble (two-sided-short-edge)', () => {
+  // Four distinct 2×2 grayscale pages; each has a unique top-left corner value
+  // so we can detect a 180° flip by checking where that corner lands.
+  const pages = [
+    [
+      [11, 12],
+      [13, 14],
+    ],
+    [
+      [21, 22],
+      [23, 24],
+    ],
+    [
+      [31, 32],
+      [33, 34],
+    ],
+    [
+      [41, 42],
+      [43, 44],
+    ],
+  ];
+
+  function renderWithSides(
+    dir: string,
+    name: string,
+    sides: SidesValue | undefined,
+    blob = pwgMultiPage(pages)
+  ) {
+    const doc: Document = { format: 'image/pwg-raster', bytes: blob };
+    return renderRasterJob(
+      [doc],
+      1,
+      join(dir, name),
+      undefined,
+      false,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      sides
+    );
+  }
+
+  it('rotates even pages 180° but leaves odd pages unchanged', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pe-tumble-'));
+    try {
+      const out = renderWithSides(dir, 'tumble', Sides.TWO_SIDED_SHORT_EDGE);
+      expect(out.length).toBe(4);
+
+      const px = out.map((p) => pngGrayPixels(readFileSync(p.path), 2, 2));
+
+      // Odd pages (1, 3) — top-left corner stays top-left (unchanged).
+      expect(px[0]).toEqual([
+        [11, 12],
+        [13, 14],
+      ]);
+      expect(px[2]).toEqual([
+        [31, 32],
+        [33, 34],
+      ]);
+
+      // Even pages (2, 4) — 180° flip: the top-left value lands bottom-right.
+      expect(px[1]).toEqual([
+        [24, 23],
+        [22, 21],
+      ]);
+      expect(px[3]).toEqual([
+        [44, 43],
+        [42, 41],
+      ]);
+      // Corner moved corner-to-opposite-corner on the even page, not the odd one.
+      expect(px[1][1][1]).toBe(21); // page 2 top-left value now at bottom-right
+      expect(px[0][0][0]).toBe(11); // page 1 top-left value still top-left
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('two-sided-long-edge and one-sided are byte-identical to baseline', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pe-tumble-noop-'));
+    try {
+      const baseline = renderWithSides(dir, 'base', undefined);
+      const longEdge = renderWithSides(dir, 'long', Sides.TWO_SIDED_LONG_EDGE);
+      const oneSided = renderWithSides(dir, 'one', Sides.ONE_SIDED);
+
+      for (let i = 0; i < baseline.length; i++) {
+        const b = readFileSync(baseline[i].path);
+        expect(readFileSync(longEdge[i].path).equals(b)).toBe(true);
+        expect(readFileSync(oneSided[i].path).equals(b)).toBe(true);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('counts even/odd over the post-page-ranges emitted sequence', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pe-tumble-ranges-'));
+    try {
+      // page-ranges=2-4 drops physical page 1, so the emitted sequence is
+      // physical pages 2,3,4 → emit-index 1,2,3. The tumble rotates emit-index 2
+      // (physical page 3), NOT physical page 2/4.
+      const doc: Document = {
+        format: 'image/pwg-raster',
+        bytes: pwgMultiPage(pages),
+      };
+      const out = renderRasterJob(
+        [doc],
+        1,
+        join(dir, 'r'),
+        undefined,
+        false,
+        undefined,
+        [{ lower: 2, upper: 4 }],
+        undefined,
+        undefined,
+        Sides.TWO_SIDED_SHORT_EDGE
+      );
+      expect(out.map((p) => p.page)).toEqual([2, 3, 4]);
+      const px = out.map((p) => pngGrayPixels(readFileSync(p.path), 2, 2));
+      // emit-index 1 (physical 2): unchanged.
+      expect(px[0]).toEqual([
+        [21, 22],
+        [23, 24],
+      ]);
+      // emit-index 2 (physical 3): rotated 180°.
+      expect(px[1]).toEqual([
+        [34, 33],
+        [32, 31],
+      ]);
+      // emit-index 3 (physical 4): unchanged.
+      expect(px[2]).toEqual([
+        [41, 42],
+        [43, 44],
+      ]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

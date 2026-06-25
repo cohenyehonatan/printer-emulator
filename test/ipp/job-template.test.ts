@@ -44,6 +44,7 @@ import type { Document } from '../../src/documents/document.js';
 import { mkdtempSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { inflateSync } from 'zlib';
 
 const PDF = Buffer.from('%PDF-1.4');
 
@@ -146,6 +147,31 @@ function colorPwgPage(): Buffer {
 /** The 25th byte of a baseline PNG is the IHDR color-type (0=gray, 2=RGB). */
 function pngColorType(png: Buffer): number {
   return png[25];
+}
+
+/**
+ * Inflate a grayscale PNG's IDAT and return its `width × height` pixel rows
+ * (8-bit, 1 byte/pixel), stripping each scanline's leading filter byte.
+ */
+function pngGrayPixels(png: Buffer, width: number, height: number): number[][] {
+  const sig = 8;
+  let pos = sig;
+  let raw: number[] = [];
+  while (pos + 8 <= png.length) {
+    const length = png.readUInt32BE(pos);
+    const type = png.toString('ascii', pos + 4, pos + 8);
+    if (type === 'IDAT') {
+      raw = Array.from(inflateSync(png.subarray(pos + 8, pos + 8 + length)));
+      break;
+    }
+    pos = pos + 8 + length + 4;
+  }
+  const rows: number[][] = [];
+  const stride = width + 1; // filter byte + width samples
+  for (let y = 0; y < height; y++) {
+    rows.push(raw.slice(y * stride + 1, y * stride + 1 + width));
+  }
+  return rows;
 }
 
 describe('print Job Template attributes (RFC 8011 §5.2 / PWG 5100.13)', () => {
@@ -490,6 +516,68 @@ describe('print-color-mode=monochrome forces grayscale raster output', () => {
       const highPng = readFileSync(join(dir, 'high-job1-p1.png'));
       expect(highPng.readUInt32BE(16)).toBe(4); // full width
       expect(highPng.readUInt32BE(20)).toBe(2); // full height
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('IppPrinter wires sides=two-sided-short-edge into the render path (tumble)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pe-job-template-sides-e2e-'));
+    try {
+      // A two-page 2x2 gray raster with distinct per-page corner values so a
+      // 180° back-page tumble is observable.
+      const page = (...px: number[]) => {
+        const header = pwgPageHeader({
+          width: 2,
+          height: 2,
+          bitsPerColor: 8,
+          bitsPerPixel: 8,
+          bytesPerLine: 2,
+          colorSpace: 18, // sGray
+        });
+        // lineRepeat=1 (byte 0), literal control = (#groups - 1) = width-1, then
+        // the row's pixel bytes (one literal run of `width` groups).
+        const line = (a: number, b: number) => [lineRepeat(1), 1, a, b];
+        return Buffer.concat([
+          header,
+          Buffer.from([...line(px[0], px[1]), ...line(px[2], px[3])]),
+        ]);
+      };
+      const twoPage = Buffer.concat([
+        Buffer.from('RaS2', 'ascii'),
+        page(11, 12, 13, 14), // page 1 (front)
+        page(21, 22, 23, 24), // page 2 (back)
+      ]);
+
+      const printer = new IppPrinter({
+        port: 0,
+        advertise: false,
+        logLevel: 'error',
+        rasterOut: join(dir, 'out'),
+      });
+      printer.handleRequest(
+        encode(
+          request(
+            OperationIds.PRINT_JOB,
+            [mimeMediaTypeAttr('document-format', 'image/pwg-raster')],
+            [keywordAttr('sides', 'two-sided-short-edge')],
+            twoPage
+          )
+        )
+      );
+
+      // Page 1 (odd/front): unchanged.
+      const p1 = pngGrayPixels(readFileSync(join(dir, 'out-job1-p1.png')), 2, 2);
+      expect(p1).toEqual([
+        [11, 12],
+        [13, 14],
+      ]);
+      // Page 2 (even/back): rotated 180° — top-left value lands bottom-right.
+      const p2 = pngGrayPixels(readFileSync(join(dir, 'out-job1-p2.png')), 2, 2);
+      expect(p2).toEqual([
+        [24, 23],
+        [22, 21],
+      ]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
