@@ -193,6 +193,11 @@ export function buildPrinterAttributes(
       name: 'operations-supported',
       values: [
         OperationIds.PRINT_JOB,
+        // Print-URI / Send-URI — the printer fetches a client-supplied
+        // document-uri. LOCAL-ONLY in this emulator (file:// + http://localhost);
+        // see uri-fetch.ts + document-uri-schemes-supported below.
+        OperationIds.PRINT_URI,
+        OperationIds.SEND_URI,
         OperationIds.VALIDATE_JOB,
         OperationIds.CREATE_JOB,
         OperationIds.SEND_DOCUMENT,
@@ -245,6 +250,27 @@ export function buildPrinterAttributes(
     mimeMediaTypeAttr('document-format-default', 'application/octet-stream'),
     mimeMediaTypeAttr('document-format-supported', ...SUPPORTED_FORMATS),
     booleanAttr('printer-is-accepting-jobs', true),
+    // Print-URI/Send-URI fetch capability (RFC 8011 §5.4.10 / §5.4.27). These
+    // advertise WHICH document-uri schemes the printer will retrieve. This
+    // emulator is LOCAL-ONLY: `file` (local filesystem) and `http` (restricted
+    // at fetch time to localhost/127.0.0.1/[::1] only — there is no IPP attribute
+    // to express the host restriction, so the constraint is enforced in
+    // uri-fetch.ts and documented in the README). Every other scheme — and any
+    // non-local http host — is refused with client-error-uri-scheme-not-supported.
+    {
+      name: 'document-uri-schemes-supported',
+      values: ['file', 'http'].map((s) => ({
+        tag: ValueTags.URI_SCHEME,
+        value: s,
+      })),
+    },
+    {
+      name: 'reference-uri-schemes-supported',
+      values: ['file', 'http'].map((s) => ({
+        tag: ValueTags.URI_SCHEME,
+        value: s,
+      })),
+    },
     keywordAttr('pdl-override-supported', 'attempted'),
     keywordAttr('compression-supported', 'none'),
     // Common print Job Template capabilities (RFC 8011 §5.2 / PWG 5100.13): the
