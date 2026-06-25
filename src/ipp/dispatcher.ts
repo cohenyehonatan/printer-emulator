@@ -29,6 +29,7 @@ import {
 import type { PrinterIdentity } from '../printer/printer-attributes.js';
 import type { JobQueue } from '../printer/job-queue.js';
 import type { Job } from '../printer/job.js';
+import type { SubscriptionManager } from '../printer/subscription-manager.js';
 
 import { handleGetPrinterAttributes } from './operations/get-printer-attributes.js';
 import { handlePrintJob } from './operations/print-job.js';
@@ -49,6 +50,15 @@ import { handleResumePrinter } from './operations/resume-printer.js';
 import { handleIdentifyPrinter } from './operations/identify-printer.js';
 import { handleSetPrinterAttributes } from './operations/set-printer-attributes.js';
 import { handleSetJobAttributes } from './operations/set-job-attributes.js';
+import {
+  handleCreatePrinterSubscriptions,
+  handleCreateJobSubscriptions,
+} from './operations/create-subscriptions.js';
+import { handleGetSubscriptionAttributes } from './operations/get-subscription-attributes.js';
+import { handleGetSubscriptions } from './operations/get-subscriptions.js';
+import { handleCancelSubscription } from './operations/cancel-subscription.js';
+import { handleRenewSubscription } from './operations/renew-subscription.js';
+import { handleGetNotifications } from './operations/get-notifications.js';
 
 /** Shared context passed to every operation handler. */
 export interface OperationContext {
@@ -100,6 +110,21 @@ export interface OperationContext {
    * emulator has no auth layer (see README).
    */
   setPrinterAttributes?: (overrides: Partial<PrinterIdentity>) => void;
+  /**
+   * Event-notification subscription manager (RFC 3995 / RFC 3996), present when
+   * the printer supports pull-mode notifications. The subscription operations
+   * (Create-*-Subscriptions, Get-Subscription(s)-Attributes, Cancel/Renew-
+   * Subscription, Get-Notifications) reach it through here. Optional so bare
+   * unit-test contexts can omit it — those operations then return not-found /
+   * operation-not-supported semantics gracefully.
+   */
+  subscriptions?: SubscriptionManager;
+  /**
+   * Live printer-up-time in seconds (RFC 8011 §5.4.29) — seconds since the
+   * printer object started. Surfaced in Get-Printer-Attributes and stamped onto
+   * each delivered event-notification. Optional; defaults to 0 when absent.
+   */
+  printerUpTime?: () => number;
 }
 
 export type OperationHandler = (
@@ -127,6 +152,13 @@ const HANDLERS: Record<number, OperationHandler> = {
   [OperationIds.IDENTIFY_PRINTER]: handleIdentifyPrinter,
   [OperationIds.SET_PRINTER_ATTRIBUTES]: handleSetPrinterAttributes,
   [OperationIds.SET_JOB_ATTRIBUTES]: handleSetJobAttributes,
+  [OperationIds.CREATE_PRINTER_SUBSCRIPTIONS]: handleCreatePrinterSubscriptions,
+  [OperationIds.CREATE_JOB_SUBSCRIPTIONS]: handleCreateJobSubscriptions,
+  [OperationIds.GET_SUBSCRIPTION_ATTRIBUTES]: handleGetSubscriptionAttributes,
+  [OperationIds.GET_SUBSCRIPTIONS]: handleGetSubscriptions,
+  [OperationIds.CANCEL_SUBSCRIPTION]: handleCancelSubscription,
+  [OperationIds.RENEW_SUBSCRIPTION]: handleRenewSubscription,
+  [OperationIds.GET_NOTIFICATIONS]: handleGetNotifications,
 };
 
 /** Dispatch a decoded IPP request to its handler and return the response. */
