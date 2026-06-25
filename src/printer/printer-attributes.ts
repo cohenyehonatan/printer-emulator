@@ -25,6 +25,13 @@ import {
   MEDIA_DEFAULT,
   NUMBER_UP_SUPPORTED,
   NUMBER_UP_DEFAULT,
+  NOTIFY_EVENTS_SUPPORTED,
+  NOTIFY_PULL_METHOD_IPPGET,
+  NOTIFY_SCHEMES_SUPPORTED,
+  NOTIFY_LEASE_DURATION_DEFAULT,
+  NOTIFY_LEASE_DURATION_MIN,
+  NOTIFY_LEASE_DURATION_MAX,
+  NOTIFY_MAX_EVENTS,
   type PrinterStateValue,
   IPP_VERSION_MAJOR,
   IPP_VERSION_MINOR,
@@ -41,6 +48,7 @@ import {
   nameWithoutLangAttr,
   textWithoutLangAttr,
   mimeMediaTypeAttr,
+  rangesAttr,
 } from '../ipp/attribute.js';
 import { ValueTags } from '../ipp/constants.js';
 import { JOB_SETTABLE_ATTRIBUTES } from './job.js';
@@ -129,7 +137,13 @@ export function buildPrinterAttributes(
    * values gaining a `tls` entry. When omitted, the attribute set is byte-for-
    * byte identical to the plaintext-only printer.
    */
-  ippsUri?: string
+  ippsUri?: string,
+  /**
+   * Live printer-up-time (RFC 8011 §5.4.29) in seconds — seconds since the
+   * printer object started. Defaults to 0 for bare unit-test contexts that
+   * don't track it.
+   */
+  upTime = 0
 ): IppAttribute[] {
   const reasons = stateReasons.length > 0 ? stateReasons : ['none'];
   const version = `${IPP_VERSION_MAJOR}.${IPP_VERSION_MINOR}`;
@@ -197,6 +211,14 @@ export function buildPrinterAttributes(
         OperationIds.IDENTIFY_PRINTER,
         OperationIds.SET_PRINTER_ATTRIBUTES,
         OperationIds.SET_JOB_ATTRIBUTES,
+        // Event notifications — RFC 3995 subscriptions + RFC 3996 ippget pull.
+        OperationIds.CREATE_PRINTER_SUBSCRIPTIONS,
+        OperationIds.CREATE_JOB_SUBSCRIPTIONS,
+        OperationIds.GET_SUBSCRIPTION_ATTRIBUTES,
+        OperationIds.GET_SUBSCRIPTIONS,
+        OperationIds.RENEW_SUBSCRIPTION,
+        OperationIds.CANCEL_SUBSCRIPTION,
+        OperationIds.GET_NOTIFICATIONS,
       ].map((op) => ({ tag: ValueTags.ENUM, value: op })),
     },
     // Set-Printer-Attributes / Set-Job-Attributes (RFC 3380) writable sets: the
@@ -287,5 +309,24 @@ export function buildPrinterAttributes(
       JobHoldUntil.THIRD_SHIFT
     ),
     keywordAttr('job-hold-until-default', JOB_HOLD_UNTIL_DEFAULT),
+    // printer-up-time (RFC 8011 §5.4.29): seconds since the printer started.
+    // Also stamped onto each delivered event-notification.
+    integerAttr('printer-up-time', Math.max(0, Math.trunc(upTime))),
+    // Event-notification capabilities — RFC 3995 (subscriptions) + RFC 3996
+    // (ippget pull). This emulator supports PULL delivery only: a client
+    // subscribes (Create-*-Subscriptions), prints, then pulls queued events with
+    // Get-Notifications. `notify-pull-method-supported`/`notify-schemes-supported`
+    // are `ippget`; there is no outbound push (no notify-recipient-uri).
+    keywordAttr('notify-events-supported', ...NOTIFY_EVENTS_SUPPORTED),
+    keywordAttr('notify-events-default', NOTIFY_EVENTS_SUPPORTED[1]),
+    keywordAttr('notify-pull-method-supported', NOTIFY_PULL_METHOD_IPPGET),
+    keywordAttr('notify-schemes-supported', ...NOTIFY_SCHEMES_SUPPORTED),
+    integerAttr('notify-lease-duration-default', NOTIFY_LEASE_DURATION_DEFAULT),
+    // notify-lease-duration-supported is a rangeOfInteger (RFC 3995 §5.3.5).
+    rangesAttr('notify-lease-duration-supported', [
+      NOTIFY_LEASE_DURATION_MIN,
+      NOTIFY_LEASE_DURATION_MAX,
+    ]),
+    integerAttr('notify-max-events-supported', NOTIFY_MAX_EVENTS),
   ];
 }

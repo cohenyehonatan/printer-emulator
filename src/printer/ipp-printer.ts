@@ -12,6 +12,7 @@ import { EventEmitter } from 'events';
 import { Logger } from '../logging/logger.js';
 import { JobQueue } from './job-queue.js';
 import { JobState } from './states.js';
+import { SubscriptionManager } from './subscription-manager.js';
 import {
   DEFAULT_IDENTITY,
   type PrinterIdentity,
@@ -31,7 +32,10 @@ import {
   DEFAULT_TLS_PORT,
   IPP_VERSION_MAJOR,
   IPP_VERSION_MINOR,
+  NotifyEvents,
+  JobStates,
   type PrinterStateValue,
+  type JobStateValue,
 } from '../ipp/constants.js';
 import type { IppResponse } from '../ipp/message.js';
 import type { Job } from './job.js';
@@ -88,6 +92,20 @@ export class IppPrinter extends EventEmitter {
   private ippsUri: string | null = null;
   private mdns: MdnsAdvertiser | null = null;
   private state: PrinterStateValue = PrinterStates.IDLE;
+  /**
+   * Epoch-ms when this printer object was constructed — the base for
+   * printer-up-time (RFC 8011 §5.4.29), reported in seconds.
+   */
+  private readonly startedAt = Date.now();
+  /**
+   * Event-notification subscription manager (RFC 3995 / RFC 3996 pull mode).
+   * Owns the live subscriptions and per-subscription event queues; fed by the
+   * lifecycle event sources (job created/completed/state-changed, printer
+   * pause/resume) wired in handleRequest()/recordLifecycleEvents().
+   */
+  private readonly subscriptions = new SubscriptionManager(() =>
+    this.upTimeSeconds()
+  );
   /**
    * Whether the printer is paused (Pause-Printer, 0x0010). While paused,
    * liveState() reports `stopped` and the job-running operation paths defer
@@ -225,7 +243,19 @@ export class IppPrinter extends EventEmitter {
         ? (job: Job) => this.renderRaster(job)
         : undefined,
       setPrinterAttributes: (overrides) => this.setPrinterAttributes(overrides),
+      subscriptions: this.subscriptions,
+      printerUpTime: () => this.upTimeSeconds(),
     };
+  }
+
+  /** Seconds since this printer object started — printer-up-time (RFC 8011). */
+  private upTimeSeconds(): number {
+    return Math.floor((Date.now() - this.startedAt) / 1000);
+  }
+
+  /** The subscription manager (for inspection/tests). */
+  getSubscriptions(): SubscriptionManager {
+    return this.subscriptions;
   }
 
   /**
@@ -384,6 +414,94 @@ export class IppPrinter extends EventEmitter {
   }
 
   /**
+   * Snapshot the state of every known job (id → numeric job-state) plus the
+   * live printer-state, taken just before an operation is dispatched. Compared
+   * against the post-dispatch state by recordLifecycleEvents() to derive which
+   * notification events to record.
+   */
+  private snapshotStates(): {
+    jobs: Map<number, JobStateValue>;
+    printerState: PrinterStateValue;
+  } {
+    const jobs = new Map<number, JobStateValue>();
+    for (const job of this.queue.list()) {
+      jobs.set(job.id, job.stateValue);
+    }
+    return { jobs, printerState: this.liveState() };
+  }
+
+  /**
+   * Derive and record event-notifications (RFC 3995) by diffing the pre-dispatch
+   * snapshot against current state. A job absent from the snapshot is newly
+   * created (job-created); a job whose state changed records job-state-changed,
+   * plus job-completed when it reached a terminal state (completed/canceled/
+   * aborted) and job-stopped when it entered processing-stopped. A change in
+   * printer-state records printer-state-changed (and printer-stopped when it
+   * became stopped). Feeds the subscription manager, which fans each event out
+   * to matching subscriptions. Synchronous — jobs run synchronously.
+   */
+  private recordLifecycleEvents(before: {
+    jobs: Map<number, JobStateValue>;
+    printerState: PrinterStateValue;
+  }): void {
+    // Job events.
+    for (const job of this.queue.list()) {
+      const prev = before.jobs.get(job.id);
+      const now = job.stateValue;
+
+      if (prev === undefined) {
+        // A job not in the snapshot is newly created by this operation.
+        this.subscriptions.recordEvent({
+          event: NotifyEvents.JOB_CREATED,
+          jobId: job.id,
+          jobState: now,
+        });
+      }
+
+      if (prev !== now) {
+        this.subscriptions.recordEvent({
+          event: NotifyEvents.JOB_STATE_CHANGED,
+          jobId: job.id,
+          jobState: now,
+        });
+        if (
+          now === JobStates.COMPLETED ||
+          now === JobStates.CANCELED ||
+          now === JobStates.ABORTED
+        ) {
+          this.subscriptions.recordEvent({
+            event: NotifyEvents.JOB_COMPLETED,
+            jobId: job.id,
+            jobState: now,
+          });
+        }
+        if (now === JobStates.PROCESSING_STOPPED) {
+          this.subscriptions.recordEvent({
+            event: NotifyEvents.JOB_STOPPED,
+            jobId: job.id,
+            jobState: now,
+          });
+        }
+      }
+    }
+
+    // Printer-state events.
+    const printerNow = this.liveState();
+    if (printerNow !== before.printerState) {
+      this.subscriptions.recordEvent({
+        event: NotifyEvents.PRINTER_STATE_CHANGED,
+        printerState: printerNow,
+      });
+      if (printerNow === PrinterStates.STOPPED) {
+        this.subscriptions.recordEvent({
+          event: NotifyEvents.PRINTER_STOPPED,
+          printerState: printerNow,
+        });
+      }
+    }
+  }
+
+  /**
    * Decode an IPP request body, dispatch it, and encode the response.
    * Any decode failure becomes a client-error-bad-request response so the
    * caller always gets a valid IPP reply.
@@ -397,7 +515,15 @@ export class IppPrinter extends EventEmitter {
         `op=0x${request.operationIdOrStatusCode.toString(16).padStart(4, '0')}`,
         `request-id=${request.requestId} groups=${request.groups.length}`
       );
+      // Snapshot job + printer state before dispatch so we can record the
+      // event-notifications produced by the operation (job created/completed/
+      // state-changed, printer-state-changed) by diffing afterward. Centralizing
+      // this here keeps the per-operation handlers unchanged — every job-running
+      // path (Print-Job, Send-Document/Close-Job, Release/Restart-Job,
+      // Resume-Printer's runPendingJobs) flows through one diff.
+      const before = this.snapshotStates();
       response = dispatch(request, this.buildContext());
+      this.recordLifecycleEvents(before);
       this.emit('request', request, response);
     } catch (err) {
       this.logger.error(`Failed to decode IPP request: ${(err as Error).message}`);

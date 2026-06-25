@@ -36,7 +36,8 @@ export function handleGetPrinterAttributes(
       ctx.identity,
       ctx.printerState(),
       ctx.printerStateReasons?.(),
-      ctx.ippsUri
+      ctx.ippsUri,
+      ctx.printerUpTime?.()
     )
   );
 
