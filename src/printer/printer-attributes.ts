@@ -295,7 +295,11 @@ export function buildPrinterAttributes(
       })),
     },
     keywordAttr('pdl-override-supported', 'attempted'),
-    keywordAttr('compression-supported', 'none'),
+    // compression-supported (1setOf keyword, RFC 8011 §5.4.32): the document
+    // `compression` methods the printer can decode. `none` is the default;
+    // `gzip` (RFC 1952) and `deflate` (RFC 1951) are decompressed in-process
+    // before format sniffing/rasterization (see operations/compression.ts).
+    keywordAttr('compression-supported', 'none', 'gzip', 'deflate'),
     // Common print Job Template capabilities (RFC 8011 §5.2 / PWG 5100.13): the
     // value set this emulator accepts on Print-Job/Create-Job/Set-Job-Attributes
     // plus the default applied when a client omits each. `print-color-mode`
