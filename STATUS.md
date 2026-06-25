@@ -27,6 +27,13 @@ color transform (AdobeRGB→sRGB). Job-template attributes that actually affect
 output: print-color-mode, orientation, page-ranges, number-up, print-quality,
 sides.
 
+**Admin operations** (RFC 3998): Enable-Printer / Disable-Printer (gates new
+jobs with `server-error-not-accepting-jobs` 0x0506), Pause-Printer-After-
+Current-Job, Hold-New-Jobs / Release-Held-New-Jobs, Restart-Printer — all mutate
+real `printer-is-accepting-jobs` / `printer-state-reasons` and are advertised in
+operations-supported. Validated with `ipptool` (Disable → Print-Job rejected →
+Enable → accepted).
+
 **Supply gauge**: `marker-levels` + the parallel marker-* attributes
 (marker-names/types/colors/low-levels/high-levels/units/message) — a CMYK ink
 gauge advertised in printer-description, filtered by `requested-attributes`.
@@ -53,11 +60,10 @@ https-localhost probes.
 
 ## Left (real gaps, prioritized)
 
-1. **Admin operations** — Restart-Printer, Shutdown-Printer,
-   Enable/Disable-Printer, Pause-Printer-After-Current-Job,
-   Get-Printer-Supported-Values.
-2. **Compressed document-format** — `gzip`/`deflate` (`compression`
+1. **Compressed document-format** — `gzip`/`deflate` (`compression`
    operation attribute) decoding on Print-Job/Send-Document.
+2. **More admin ops** — Shutdown/Startup-Printer, Deactivate/Activate-Printer
+   (the RFC 3998 set beyond the six already implemented).
 
 ## Net-new breadth (bigger, optional)
 
