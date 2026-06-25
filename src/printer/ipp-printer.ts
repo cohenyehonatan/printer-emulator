@@ -113,6 +113,29 @@ export class IppPrinter extends EventEmitter {
    * clears the flag and runs the deferred jobs.
    */
   private paused = false;
+  /**
+   * Whether the printer is accepting new jobs (RFC 8011 §5.4.20,
+   * `printer-is-accepting-jobs`). Disable-Printer (RFC 3998, 0x0023) sets this
+   * false — the job-creating operations then reject with
+   * server-error-not-accepting-jobs (0x0507); Enable-Printer (0x0022) sets it
+   * back true. Independent of `paused` (which governs PROCESSING, not admission).
+   */
+  private accepting = true;
+  /**
+   * Whether the printer is holding newly submitted jobs (Hold-New-Jobs, RFC
+   * 3998, 0x0025). While true, a Print-Job/Create-Job that would otherwise run
+   * is instead held (`pending-held`) and the printer advertises the
+   * `hold-new-jobs` state-reason. Release-Held-New-Jobs (0x0026) clears it and
+   * runs the jobs it held.
+   */
+  private holdingNewJobs = false;
+  /**
+   * The ids of jobs that are held SOLELY because they were submitted while
+   * `holdingNewJobs` was true. Release-Held-New-Jobs releases exactly these (and
+   * nothing held for an explicit `job-hold-until` or an open Create-Job). A job
+   * is recorded here by the job-creating paths via markHeldNewJob().
+   */
+  private readonly heldNewJobIds = new Set<number>();
 
   constructor(private readonly config: IppPrinterConfig) {
     super();
@@ -239,6 +262,16 @@ export class IppPrinter extends EventEmitter {
       isPaused: () => this.paused,
       pausePrinter: () => this.pause(),
       resumePrinter: () => this.resume(),
+      // RFC 3998 printer-administrative state.
+      isAcceptingJobs: () => this.accepting,
+      enablePrinter: () => this.enablePrinter(),
+      disablePrinter: () => this.disablePrinter(),
+      isHoldingNewJobs: () => this.holdingNewJobs,
+      holdNewJobs: () => this.holdNewJobs(),
+      releaseHeldNewJobs: () => this.releaseHeldNewJobs(),
+      markHeldNewJob: (jobId: number) => this.heldNewJobIds.add(jobId),
+      pausePrinterAfterCurrentJob: () => this.pauseAfterCurrentJob(),
+      restartPrinter: () => this.restartPrinter(),
       renderRaster: this.config.rasterOut
         ? (job: Job) => this.renderRaster(job)
         : undefined,
@@ -307,6 +340,91 @@ export class IppPrinter extends EventEmitter {
     this.paused = false;
     this.logger.stateChange('stopped', 'idle', 'Resume-Printer');
     this.runPendingJobs();
+  }
+
+  /**
+   * Enable-Printer (RFC 3998, 0x0022): start accepting new jobs. Idempotent.
+   */
+  enablePrinter(): void {
+    if (this.accepting) return;
+    this.accepting = true;
+    this.logger.info('Enable-Printer: printer-is-accepting-jobs = true');
+  }
+
+  /**
+   * Disable-Printer (RFC 3998, 0x0023): stop accepting new jobs. Already-queued
+   * jobs are unaffected; new Print-Job/Create-Job submissions are rejected with
+   * server-error-not-accepting-jobs (0x0507). Does not change printer-state.
+   * Idempotent.
+   */
+  disablePrinter(): void {
+    if (!this.accepting) return;
+    this.accepting = false;
+    this.logger.info('Disable-Printer: printer-is-accepting-jobs = false');
+  }
+
+  /**
+   * Hold-New-Jobs (RFC 3998, 0x0025): hold subsequently submitted jobs as
+   * `pending-held` and advertise the `hold-new-jobs` state-reason. Idempotent.
+   */
+  holdNewJobs(): void {
+    if (this.holdingNewJobs) return;
+    this.holdingNewJobs = true;
+    this.logger.info('Hold-New-Jobs: new jobs will be held (pending-held)');
+  }
+
+  /**
+   * Release-Held-New-Jobs (RFC 3998, 0x0026): leave hold-new-jobs mode and run
+   * every job that was held solely because it arrived while holding. Jobs held
+   * for an explicit `job-hold-until` (or open Create-Job jobs) are left as-is.
+   * Idempotent.
+   */
+  releaseHeldNewJobs(): void {
+    this.holdingNewJobs = false;
+    for (const jobId of [...this.heldNewJobIds]) {
+      const job = this.queue.get(jobId);
+      this.heldNewJobIds.delete(jobId);
+      if (!job) continue;
+      // release() drives PENDING_HELD → PENDING and (unless paused) runs the
+      // emulated print to completion, then renders raster pages if configured.
+      if (job.release(this.paused)) {
+        if (!this.paused) this.renderRaster(job);
+      }
+    }
+    this.logger.info('Release-Held-New-Jobs: held new jobs released');
+  }
+
+  /**
+   * Pause-Printer-After-Current-Job (RFC 3998, 0x0024). Jobs run synchronously
+   * to completion within their submitting operation, so no job is ever mid-flight
+   * here — the "after current job" wait is zero and this reduces to Pause-Printer
+   * (printer goes `stopped` immediately). Idempotent.
+   */
+  pauseAfterCurrentJob(): void {
+    this.pause();
+  }
+
+  /**
+   * Restart-Printer (RFC 3998, 0x0029): reset to a clean running state —
+   * accepting jobs, not paused, not holding new jobs, transient state-reasons
+   * cleared (→ idle / none). Clearing the paused flag runs any jobs that were
+   * deferred `pending` while paused. The job queue is NOT purged; retained jobs
+   * (including ones held for an explicit job-hold-until) survive. Note: jobs that
+   * were held by Hold-New-Jobs are released and run as part of clearing that mode.
+   */
+  restartPrinter(): void {
+    this.accepting = true;
+    this.holdingNewJobs = false;
+    // Release any jobs held by hold-new-jobs (clears heldNewJobIds + runs them).
+    if (this.heldNewJobIds.size > 0) this.releaseHeldNewJobs();
+    // Clear paused last so its runPendingJobs() also runs jobs just released.
+    if (this.paused) {
+      this.resume();
+    } else {
+      this.runPendingJobs();
+    }
+    this.state = PrinterStates.IDLE;
+    this.logger.info('Restart-Printer: reset to clean running state (idle)');
   }
 
   /**

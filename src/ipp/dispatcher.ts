@@ -49,6 +49,12 @@ import { handleReleaseJob } from './operations/release-job.js';
 import { handleRestartJob } from './operations/restart-job.js';
 import { handlePausePrinter } from './operations/pause-printer.js';
 import { handleResumePrinter } from './operations/resume-printer.js';
+import { handleEnablePrinter } from './operations/enable-printer.js';
+import { handleDisablePrinter } from './operations/disable-printer.js';
+import { handlePausePrinterAfterCurrentJob } from './operations/pause-printer-after-current-job.js';
+import { handleHoldNewJobs } from './operations/hold-new-jobs.js';
+import { handleReleaseHeldNewJobs } from './operations/release-held-new-jobs.js';
+import { handleRestartPrinter } from './operations/restart-printer.js';
 import { handleIdentifyPrinter } from './operations/identify-printer.js';
 import { handleSetPrinterAttributes } from './operations/set-printer-attributes.js';
 import { handleSetJobAttributes } from './operations/set-job-attributes.js';
@@ -94,6 +100,51 @@ export interface OperationContext {
   pausePrinter?: () => void;
   /** Resume the printer and run any deferred pending jobs to completion. */
   resumePrinter?: () => void;
+  /**
+   * Whether the printer is currently accepting new jobs (RFC 8011 §5.4.20,
+   * `printer-is-accepting-jobs`). Toggled by Enable-Printer/Disable-Printer
+   * (RFC 3998). When false, the job-creating operations (Print-Job, Create-Job,
+   * Print-URI, Send-URI, Validate-Job) reject with server-error-not-accepting-
+   * jobs (0x0507). Defaults to "accepting" when absent (bare unit-test contexts).
+   */
+  isAcceptingJobs?: () => boolean;
+  /** Enable-Printer (RFC 3998, 0x0022): set printer-is-accepting-jobs = true. */
+  enablePrinter?: () => void;
+  /** Disable-Printer (RFC 3998, 0x0023): set printer-is-accepting-jobs = false. */
+  disablePrinter?: () => void;
+  /**
+   * Whether the printer is holding newly submitted jobs (Hold-New-Jobs, RFC
+   * 3998, 0x0025). When true, a Print-Job/Create-Job that would otherwise run is
+   * instead held (`pending-held`, reason `job-hold-until-specified`) and the
+   * printer advertises the `hold-new-jobs` state-reason. Release-Held-New-Jobs
+   * (0x0026) clears the flag and runs the held jobs. Defaults false when absent.
+   */
+  isHoldingNewJobs?: () => boolean;
+  /** Hold-New-Jobs (RFC 3998, 0x0025): hold subsequently submitted jobs. */
+  holdNewJobs?: () => void;
+  /** Release-Held-New-Jobs (RFC 3998, 0x0026): release jobs held by Hold-New-Jobs. */
+  releaseHeldNewJobs?: () => void;
+  /**
+   * Record that a job was held SOLELY because it was submitted while the printer
+   * was holding new jobs (Hold-New-Jobs). Release-Held-New-Jobs releases exactly
+   * the jobs so marked. Called by the job-creating paths (Print-Job/Create-Job)
+   * after they hold a new job for this reason. Absent in bare unit-test contexts.
+   */
+  markHeldNewJob?: (jobId: number) => void;
+  /**
+   * Pause-Printer-After-Current-Job (RFC 3998, 0x0024): stop the printer after
+   * the currently-processing job finishes. Jobs run synchronously here (no job
+   * is ever mid-flight between operations), so this reduces to Pause-Printer —
+   * the printer goes `stopped` immediately. Provided as its own hook so the
+   * handler maps onto the right semantics.
+   */
+  pausePrinterAfterCurrentJob?: () => void;
+  /**
+   * Restart-Printer (RFC 3998, 0x0029): reset the printer to a clean running
+   * state — accepting jobs, not paused, not holding new jobs, idle, transient
+   * state-reasons cleared. Does NOT purge the job queue (retained jobs survive).
+   */
+  restartPrinter?: () => void;
   /**
    * Optional "actually print" hook: invoked with a finished raster job so the
    * emulator can render its PWG/URF pages to PNGs. Present only when an output
@@ -162,6 +213,14 @@ const HANDLERS: Record<number, OperationHandler> = {
   [OperationIds.RESTART_JOB]: handleRestartJob,
   [OperationIds.PAUSE_PRINTER]: handlePausePrinter,
   [OperationIds.RESUME_PRINTER]: handleResumePrinter,
+  // RFC 3998 printer-administrative operations.
+  [OperationIds.ENABLE_PRINTER]: handleEnablePrinter,
+  [OperationIds.DISABLE_PRINTER]: handleDisablePrinter,
+  [OperationIds.PAUSE_PRINTER_AFTER_CURRENT_JOB]:
+    handlePausePrinterAfterCurrentJob,
+  [OperationIds.HOLD_NEW_JOBS]: handleHoldNewJobs,
+  [OperationIds.RELEASE_HELD_NEW_JOBS]: handleReleaseHeldNewJobs,
+  [OperationIds.RESTART_PRINTER]: handleRestartPrinter,
   [OperationIds.IDENTIFY_PRINTER]: handleIdentifyPrinter,
   [OperationIds.SET_PRINTER_ATTRIBUTES]: handleSetPrinterAttributes,
   [OperationIds.SET_JOB_ATTRIBUTES]: handleSetJobAttributes,
