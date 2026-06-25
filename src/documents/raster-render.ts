@@ -39,6 +39,23 @@
  * unknown/absent orientation leaves the page unrotated. See rotatePixels() and
  * orientationToDegrees().
  *
+ * `print-quality` (RFC 8011 §5.2.13) also changes the output by mapping the
+ * requested quality to an output-resolution scale factor: draft (3) → 0.5×
+ * (the page is nearest-neighbor DOWNSCALED to half resolution, so its PNG comes
+ * out with roughly halved dimensions), normal (4) → 1.0× (full resolution, a
+ * no-op), high (5) → 1.0× (full resolution). high === normal because the
+ * emulator can't synthesize detail it never received — there is no honest way to
+ * make "high" sharper than the source raster, so it is full-res like normal (the
+ * mapping is documented here and in the README). The downscale is applied PER
+ * SOURCE PAGE, after monochrome/luma reduction and AFTER orientation rotation
+ * (rotate then downscale), and BEFORE number-up tiling — so each tile is already
+ * downscaled when it is composited. The byte-generic helper preserves
+ * bytesPerPixel (1/3 for 8-bit, 2/6 for 16-bit big-endian), so draft composes
+ * with monochrome, orientation, number-up, and 16-bit pages. A factor of 1.0 is
+ * a no-op (normal/high are byte-identical to a job with no print-quality), and
+ * an unknown/absent print-quality is treated as normal (1.0). See
+ * printQualityToFactor() and downscalePixels().
+ *
  * `page-ranges` (RFC 8011 §5.2.7) selects which pages are emitted: only pages
  * whose 1-based index (counted across all of the job's raster documents, in
  * submission order) falls inside any requested `{lower, upper}` range are
@@ -74,8 +91,11 @@ import {
   encodeGray16Png,
   encodeRgb16Png,
 } from '../utils/png.js';
-import { OrientationRequested } from '../ipp/constants.js';
-import type { OrientationRequestedValue } from '../ipp/constants.js';
+import { OrientationRequested, PrintQuality } from '../ipp/constants.js';
+import type {
+  OrientationRequestedValue,
+  PrintQualityValue,
+} from '../ipp/constants.js';
 import type { PageRange } from '../ipp/job-template.js';
 import type { Document } from './document.js';
 import type { Logger } from '../logging/logger.js';
@@ -118,6 +138,14 @@ export interface RenderedPage {
  * 1-based SHEET index (not source-page index); a 4-page job at number-up=2 emits
  * `-p1.png` and `-p2.png`, two pages tiled each. `numberUp` ≤ 1 / undefined
  * keeps one PNG per page (the source-page index suffix above).
+ *
+ * `printQuality` honors `print-quality`: the resolved quality maps to an
+ * output-resolution scale factor (draft → 0.5×, normal/high → 1.0×) and each
+ * source page's pixel buffer + dims are nearest-neighbor DOWNSCALED by that
+ * factor — applied after orientation rotation and before number-up tiling. A
+ * factor of 1.0 (normal/high, or an unknown/absent value) leaves pages
+ * unchanged, so a job with no print-quality renders byte-identically to before.
+ * See printQualityToFactor() / downscalePixels().
  */
 export function renderRasterJob(
   documents: readonly Document[],
@@ -127,9 +155,11 @@ export function renderRasterJob(
   forceGrayscale = false,
   orientation?: OrientationRequestedValue,
   pageRanges?: PageRange[],
-  numberUp?: number
+  numberUp?: number,
+  printQuality?: PrintQualityValue
 ): RenderedPage[] {
   const degrees = orientationToDegrees(orientation);
+  const qualityFactor = printQualityToFactor(printQuality);
 
   // ── Pass 1: decode + page-ranges filter + monochrome/rotate, collecting the
   // emit-ready pixel buffers (in source order). Keeping the prepared pages lets
@@ -186,14 +216,26 @@ export function renderRasterJob(
         degrees
       );
 
+      // Downscale per print-quality (draft → 0.5×; normal/high → 1.0× = no-op).
+      // Applied after rotation so the order is rotate→downscale; a factor of 1.0
+      // returns the buffer unchanged. The byte-generic scaler preserves
+      // bytesPerPixel (incl. 16-bit's 2/6), so depth/color survive the shrink.
+      const scaled = downscalePixels(
+        rotated.pixels,
+        rotated.width,
+        rotated.height,
+        bytesPerPixel,
+        qualityFactor
+      );
+
       prepared.push({
         index: pageNum,
-        width: rotated.width,
-        height: rotated.height,
+        width: scaled.width,
+        height: scaled.height,
         bytesPerPixel,
         isRgb,
         bitDepth: page.bitDepth,
-        pixels: rotated.pixels,
+        pixels: scaled.pixels,
         dpi: page.dpi,
       });
     }
@@ -558,6 +600,83 @@ export function rotatePixels(
       const dx = degrees === 90 ? newW - 1 - y : y;
       const dy = degrees === 90 ? x : newH - 1 - x;
       copy(x, y, (dy * newW + dx) * bpp);
+    }
+  }
+  return { width: newW, height: newH, pixels: out };
+}
+
+/**
+ * Map a `print-quality` enum value to an output-resolution scale factor:
+ *   draft (3)  → 0.5  (downscale to half resolution)
+ *   normal (4) → 1.0  (full resolution, no-op)
+ *   high (5)   → 1.0  (full resolution, no-op)
+ * Anything else (undefined / unrecognized) → 1.0 (treated as normal).
+ *
+ * high === normal (both 1.0) on purpose: the emulator can't synthesize detail
+ * the source raster never carried, so there is no honest way to render "high"
+ * sharper than "normal" — it stays full-resolution. Documented here and in the
+ * README. Pure; never throws.
+ */
+export function printQualityToFactor(
+  quality: PrintQualityValue | undefined
+): number {
+  switch (quality) {
+    case PrintQuality.DRAFT:
+      return 0.5;
+    case PrintQuality.NORMAL:
+    case PrintQuality.HIGH:
+    default:
+      return 1.0;
+  }
+}
+
+/** A downscaled pixel buffer plus its (reduced) dimensions. */
+export interface DownscaledPixels {
+  width: number;
+  height: number;
+  pixels: Uint8Array;
+}
+
+/**
+ * Downscale a row-major pixel buffer by `factor` using nearest-neighbor
+ * sampling, preserving `bytesPerPixel` samples per pixel (1 gray8 / 3 rgb8 /
+ * 2 gray16 / 6 rgb16, big-endian sample bytes for the 16-bit forms). The new
+ * dimensions are `floor(width*factor) × floor(height*factor)` (each floored to
+ * at least 1 when the source is non-empty, so a tiny page never shrinks to 0).
+ * Source samples beyond `pixels.length` read as 0 (mirrors rotatePixels' padding
+ * contract).
+ *
+ * A `factor` ≥ 1 (or non-finite/≤ 0) is a no-op: the input buffer + dims are
+ * returned unchanged (so `print-quality=normal`/`high` leaves the page exactly
+ * as today). A degenerate source dimension is likewise returned as-is. Never
+ * throws. Pure.
+ */
+export function downscalePixels(
+  pixels: Uint8Array,
+  width: number,
+  height: number,
+  bytesPerPixel: number,
+  factor: number
+): DownscaledPixels {
+  const w = Math.max(0, Math.floor(width));
+  const h = Math.max(0, Math.floor(height));
+  const bpp = Math.max(1, Math.floor(bytesPerPixel));
+  // No-op for a non-shrinking factor or a degenerate page (return as-is).
+  if (!Number.isFinite(factor) || factor >= 1 || factor <= 0 || w === 0 || h === 0) {
+    return { width: w, height: h, pixels };
+  }
+
+  const newW = Math.max(1, Math.floor(w * factor));
+  const newH = Math.max(1, Math.floor(h * factor));
+  const out = new Uint8Array(newW * newH * bpp);
+  for (let dy = 0; dy < newH; dy++) {
+    // Nearest-neighbor source row/col for this destination pixel.
+    const sy = Math.min(h - 1, Math.floor((dy * h) / newH));
+    for (let dx = 0; dx < newW; dx++) {
+      const sx = Math.min(w - 1, Math.floor((dx * w) / newW));
+      const sBase = (sy * w + sx) * bpp;
+      const dBase = (dy * newW + dx) * bpp;
+      for (let b = 0; b < bpp; b++) out[dBase + b] = pixels[sBase + b] ?? 0;
     }
   }
   return { width: newW, height: newH, pixels: out };

@@ -285,6 +285,27 @@ npx tsx src/index.ts scenario   # run the scenarios
   unrotated. Like `print-color-mode`, the Ghostscript-backed PDF/PostScript path
   is **not** rotated (gs orientation control isn't threaded through).
 
+  **`print-quality` actually scales the output resolution.** When a job sets
+  `print-quality`, the in-process PWG/URF render path maps the quality to an
+  output-resolution scale factor and **downscales each source page**
+  (nearest-neighbor) by it: `3` draft → **0.5×** (the page comes out at roughly
+  half its width and height, so a 4×2 page lands as a 2×1 PNG), `4` normal →
+  **1.0×** (full resolution), `5` high → **1.0×** (full resolution). **high ===
+  normal** on purpose: the emulator cannot synthesize detail the source raster
+  never carried, so there is no honest way to render "high" sharper than the
+  source — it stays full-resolution like normal (rather than pretending to
+  upscale). A factor of `1.0` is a no-op, so `normal`/`high` (and any
+  unknown/absent value, treated as normal) render **byte-identically** to a job
+  with no `print-quality`. The downscale runs **after** any
+  `print-color-mode`/`orientation` step (rotate **then** downscale) and
+  **before** `number-up` tiling, so it composes cleanly: draft + landscape
+  rotates then halves, draft + `number-up` shrinks each source page before it's
+  tiled, draft + monochrome shrinks the luma, and draft preserves a page's bit
+  depth (8- or 16-bit). Like the other render-affecting attributes, the
+  Ghostscript-backed PDF/PostScript path is **not** quality-scaled (gs output
+  resolution isn't threaded through), so `print-quality` affects only PWG/URF
+  jobs.
+
   **`page-ranges` actually selects which pages print.** When a job carries
   `page-ranges` (a 1setOf rangeOfInteger of 1-based inclusive ranges, e.g.
   `2-3`), the in-process PWG/URF render path emits **only** the pages whose
