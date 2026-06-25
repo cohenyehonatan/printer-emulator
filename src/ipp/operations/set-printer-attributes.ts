@@ -117,7 +117,10 @@ export function handleSetPrinterAttributes(
         ctx.identity,
         ctx.printerState(),
         ctx.printerStateReasons?.(),
-        ctx.ippsUri
+        ctx.ippsUri,
+        undefined,
+        undefined,
+        ctx.isAcceptingJobs?.() ?? true
       )
     )
   );
