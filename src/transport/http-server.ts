@@ -11,7 +11,7 @@
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'http';
 import { IPP_CONTENT_TYPE } from '../ipp/constants.js';
 
-export type IppRequestHandler = (body: Buffer) => Buffer;
+export type IppRequestHandler = (body: Buffer) => Buffer | Promise<Buffer>;
 
 export class IppHttpServer {
   private server: Server | null = null;
@@ -65,20 +65,22 @@ export class IppHttpServer {
     const chunks: Buffer[] = [];
     req.on('data', (c: Buffer) => chunks.push(c));
     req.on('end', () => {
-      let responseBody: Buffer;
-      try {
-        responseBody = this.handler(Buffer.concat(chunks));
-      } catch {
-        // The handler is contracted never to throw, but guard the socket anyway.
-        res.writeHead(500, { 'Content-Type': 'text/plain' });
-        res.end('Internal IPP error\n');
-        return;
-      }
-      res.writeHead(200, {
-        'Content-Type': IPP_CONTENT_TYPE,
-        'Content-Length': responseBody.length,
-      });
-      res.end(responseBody);
+      // The handler may be synchronous or async (Print-URI/Send-URI fetch a
+      // document-uri first); Promise.resolve() normalizes both.
+      Promise.resolve()
+        .then(() => this.handler(Buffer.concat(chunks)))
+        .then((responseBody) => {
+          res.writeHead(200, {
+            'Content-Type': IPP_CONTENT_TYPE,
+            'Content-Length': responseBody.length,
+          });
+          res.end(responseBody);
+        })
+        .catch(() => {
+          // The handler is contracted never to throw, but guard the socket anyway.
+          res.writeHead(500, { 'Content-Type': 'text/plain' });
+          res.end('Internal IPP error\n');
+        });
     });
     req.on('error', () => {
       res.writeHead(400, { 'Content-Type': 'text/plain' });
