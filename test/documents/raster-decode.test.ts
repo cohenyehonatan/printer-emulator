@@ -484,6 +484,116 @@ describe('decodeRasterPages — PWG Raster (1-bit / 16-bit / CMYK)', () => {
   });
 });
 
+describe('decodeRasterPages — AdobeRGB → sRGB ICC conversion', () => {
+  // Independent reference (matches test/documents/icc.test.ts vectors): the
+  // colorimetric AdobeRGB→sRGB transform maps (100,150,50)→≈(66,151,34) and
+  // white→white, while an sRGB page is byte-identical to its input.
+  const near = (got: number[], want: number[], tol = 2): void => {
+    expect(got.length).toBe(want.length);
+    for (let i = 0; i < got.length; i++) {
+      expect(Math.abs(got[i] - want[i])).toBeLessThanOrEqual(tol);
+    }
+  };
+
+  it('converts an AdobeRGB (colorSpace 20) 8-bit page to sRGB pixels', () => {
+    // width=2: px0 = AdobeRGB white (→ sRGB white), px1 = AdobeRGB (100,150,50)
+    // (→ sRGB ≈ (66,151,34), notably ≠ the input).
+    const header = pwgPageHeader({
+      width: 2,
+      height: 1,
+      dpiX: 300,
+      dpiY: 300,
+      bitsPerColor: 8,
+      bitsPerPixel: 24,
+      bytesPerLine: 6,
+      colorSpace: 20, // AdobeRGB
+    });
+    const line = [
+      lineRepeat(1),
+      literalControl(2),
+      0xff, 0xff, 0xff, // px0: AdobeRGB white
+      100, 150, 50, // px1: AdobeRGB green
+    ];
+
+    const blob = Buffer.concat([
+      Buffer.from('RaS2', 'ascii'),
+      header,
+      Buffer.from(line),
+    ]);
+
+    const page = decodeRasterPages(blob)![0];
+    expect(page.isColor).toBe(true);
+    const out = Array.from(page.rgb);
+    near(out.slice(0, 3), [255, 255, 255]); // white → white
+    near(out.slice(3, 6), [66, 151, 34]); // green shifted by the transform
+    // The converted green is NOT the raw input (proves the transform ran).
+    expect(out.slice(3, 6)).not.toEqual([100, 150, 50]);
+  });
+
+  it('leaves an sRGB (colorSpace 19) page byte-identical (passthrough)', () => {
+    // Same pixel bytes as above but colorSpace=sRGB: no conversion, exact bytes.
+    const header = pwgPageHeader({
+      width: 2,
+      height: 1,
+      dpiX: 300,
+      dpiY: 300,
+      bitsPerColor: 8,
+      bitsPerPixel: 24,
+      bytesPerLine: 6,
+      colorSpace: 19, // sRGB
+    });
+    const line = [
+      lineRepeat(1),
+      literalControl(2),
+      0xff, 0xff, 0xff,
+      100, 150, 50,
+    ];
+
+    const blob = Buffer.concat([
+      Buffer.from('RaS2', 'ascii'),
+      header,
+      Buffer.from(line),
+    ]);
+
+    const page = decodeRasterPages(blob)![0];
+    expect(Array.from(page.rgb)).toEqual([0xff, 0xff, 0xff, 100, 150, 50]);
+  });
+
+  it('converts a 48-bit AdobeRGB page to 16-bit sRGB samples', () => {
+    // width=1: AdobeRGB neutral gray 0x8000 in all channels → sRGB ≈ 0x80FC
+    // (≈33030), near-identical (shared D50 white), full 16-bit precision.
+    const header = pwgPageHeader({
+      width: 1,
+      height: 1,
+      dpiX: 300,
+      dpiY: 300,
+      bitsPerColor: 16,
+      bitsPerPixel: 48,
+      bytesPerLine: 6,
+      colorSpace: 20, // AdobeRGB
+    });
+    const line = [
+      lineRepeat(1),
+      repeatControl(1),
+      0x80, 0x00, 0x80, 0x00, 0x80, 0x00, // (0x8000, 0x8000, 0x8000)
+    ];
+
+    const blob = Buffer.concat([
+      Buffer.from('RaS2', 'ascii'),
+      header,
+      Buffer.from(line),
+    ]);
+
+    const page = decodeRasterPages(blob)![0];
+    expect(page.isColor).toBe(true);
+    expect(page.bitDepth).toBe(16);
+    const out = Array.from(page.rgb16);
+    near(out, [33030, 33030, 33030], 8);
+    // Not a raw passthrough of 0x8000.
+    expect(out[0]).not.toBe(0x8000);
+  });
+});
+
 describe('decodeRasterPages — URF', () => {
   it('decodes an 8-bit grayscale URF page', () => {
     const fileHeader = Buffer.alloc(12);
