@@ -147,6 +147,69 @@ export class IppClient {
   }
 
   /**
+   * Print-URI (0x0003): submit a `document-uri` for the printer to fetch and
+   * print — there is NO document body. SECURITY: this emulator fetches only
+   * LOCAL sources (`file://` + `http://localhost`/`127.0.0.1`/`[::1]`); every
+   * other URI comes back as client-error-uri-scheme-not-supported. The optional
+   * `format` declares document-format (else the printer sniffs the fetched
+   * bytes); the same Job Template options as printJob() are honored.
+   */
+  async printUri(
+    documentUri: string,
+    options: {
+      format?: string;
+      jobName?: string;
+      jobHoldUntil?: string;
+      printColorMode?: string;
+      printQuality?: number;
+      sides?: string;
+      orientation?: number;
+      media?: string;
+      pageRanges?: IppRange[];
+      numberUp?: number;
+    } = {}
+  ): Promise<IppResponse> {
+    const opAttrs: IppAttribute[] = [
+      uriAttr('document-uri', documentUri),
+      nameWithoutLangAttr('job-name', options.jobName ?? 'print-uri'),
+    ];
+    if (options.format !== undefined) {
+      opAttrs.push(mimeMediaTypeAttr('document-format', options.format));
+    }
+    const jobAttrs: IppAttribute[] = [];
+    if (options.jobHoldUntil !== undefined) {
+      jobAttrs.push(keywordAttr('job-hold-until', options.jobHoldUntil));
+    }
+    if (options.printColorMode !== undefined) {
+      jobAttrs.push(keywordAttr('print-color-mode', options.printColorMode));
+    }
+    if (options.printQuality !== undefined) {
+      jobAttrs.push(enumAttr('print-quality', options.printQuality));
+    }
+    if (options.sides !== undefined) {
+      jobAttrs.push(keywordAttr('sides', options.sides));
+    }
+    if (options.orientation !== undefined) {
+      jobAttrs.push(enumAttr('orientation-requested', options.orientation));
+    }
+    if (options.media !== undefined) {
+      jobAttrs.push(keywordAttr('media', options.media));
+    }
+    if (options.pageRanges !== undefined && options.pageRanges.length > 0) {
+      jobAttrs.push(rangesAttr('page-ranges', ...options.pageRanges));
+    }
+    if (options.numberUp !== undefined) {
+      jobAttrs.push(integerAttr('number-up', options.numberUp));
+    }
+    const request = this.baseRequest(
+      OperationIds.PRINT_URI,
+      opAttrs,
+      jobAttrs
+    );
+    return this.send(request);
+  }
+
+  /**
    * Get-Jobs: list jobs on the printer. Optionally filter by `whichJobs`
    * (not-completed / completed / all), cap the result count with `limit`, and
    * sub-select the per-job attributes with `requestedAttributes`.
@@ -261,6 +324,38 @@ export class IppClient {
     }
     const request = this.baseRequest(OperationIds.SEND_DOCUMENT, opAttrs);
     request.data = docBytes;
+    return this.send(request);
+  }
+
+  /**
+   * Send-URI (0x0007): append a document the printer FETCHES from `documentUri`
+   * to an open Create-Job job. SECURITY: LOCAL-ONLY (`file://` +
+   * `http://localhost`/`127.0.0.1`/`[::1]`); any other URI is rejected with
+   * client-error-uri-scheme-not-supported. Set `lastDocument` to release/run
+   * the job, exactly like sendDocument().
+   */
+  async sendUri(
+    jobId: number,
+    documentUri: string,
+    options: {
+      format?: string;
+      lastDocument?: boolean;
+      documentNumber?: number;
+    } = {}
+  ): Promise<IppResponse> {
+    const { lastDocument = false, documentNumber } = options;
+    const opAttrs: IppAttribute[] = [
+      integerAttr('job-id', jobId),
+      uriAttr('document-uri', documentUri),
+      booleanAttr('last-document', lastDocument),
+    ];
+    if (options.format !== undefined) {
+      opAttrs.push(mimeMediaTypeAttr('document-format', options.format));
+    }
+    if (documentNumber !== undefined) {
+      opAttrs.push(integerAttr('document-number', documentNumber));
+    }
+    const request = this.baseRequest(OperationIds.SEND_URI, opAttrs);
     return this.send(request);
   }
 
