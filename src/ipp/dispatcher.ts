@@ -33,6 +33,8 @@ import type { SubscriptionManager } from '../printer/subscription-manager.js';
 
 import { handleGetPrinterAttributes } from './operations/get-printer-attributes.js';
 import { handlePrintJob } from './operations/print-job.js';
+import { handlePrintUri } from './operations/print-uri.js';
+import { handleSendUri } from './operations/send-uri.js';
 import { handleValidateJob } from './operations/validate-job.js';
 import { handleGetJobs } from './operations/get-jobs.js';
 import { handleGetJobAttributes } from './operations/get-job-attributes.js';
@@ -132,6 +134,17 @@ export type OperationHandler = (
   ctx: OperationContext
 ) => IppResponse;
 
+/**
+ * Async operation handler. Print-URI/Send-URI fetch a `document-uri` over the
+ * network (loopback only), so they are inherently async — unlike every other
+ * operation, which completes synchronously. They are dispatched via
+ * dispatchAsync() rather than the synchronous HANDLERS table.
+ */
+export type AsyncOperationHandler = (
+  request: IppRequest,
+  ctx: OperationContext
+) => Promise<IppResponse>;
+
 const HANDLERS: Record<number, OperationHandler> = {
   [OperationIds.GET_PRINTER_ATTRIBUTES]: handleGetPrinterAttributes,
   [OperationIds.PRINT_JOB]: handlePrintJob,
@@ -161,7 +174,22 @@ const HANDLERS: Record<number, OperationHandler> = {
   [OperationIds.GET_NOTIFICATIONS]: handleGetNotifications,
 };
 
-/** Dispatch a decoded IPP request to its handler and return the response. */
+/**
+ * The async-only operations: Print-URI / Send-URI. They fetch a document-uri
+ * (loopback-only) before building their response, so they cannot be served from
+ * the synchronous HANDLERS table — dispatchAsync() routes them here.
+ */
+const ASYNC_HANDLERS: Record<number, AsyncOperationHandler> = {
+  [OperationIds.PRINT_URI]: handlePrintUri,
+  [OperationIds.SEND_URI]: handleSendUri,
+};
+
+/**
+ * Dispatch a decoded IPP request to its SYNCHRONOUS handler and return the
+ * response. Print-URI/Send-URI are not in the sync table; a request for one
+ * here returns server-error-operation-not-supported (they must go through
+ * dispatchAsync). All existing operations and tests use this path unchanged.
+ */
 export function dispatch(
   request: IppRequest,
   ctx: OperationContext
@@ -171,6 +199,24 @@ export function dispatch(
     return notSupported(request);
   }
   return handler(request, ctx);
+}
+
+/**
+ * Dispatch a decoded IPP request, awaiting the async Print-URI/Send-URI handlers
+ * when needed and otherwise delegating to the synchronous dispatch(). This is
+ * the entry point the HTTP transport uses so the document-uri fetch can complete
+ * before the response is encoded. Never throws (handlers map every failure to a
+ * status code).
+ */
+export async function dispatchAsync(
+  request: IppRequest,
+  ctx: OperationContext
+): Promise<IppResponse> {
+  const asyncHandler = ASYNC_HANDLERS[request.operationIdOrStatusCode];
+  if (asyncHandler) {
+    return asyncHandler(request, ctx);
+  }
+  return dispatch(request, ctx);
 }
 
 /** Build the standard server-error-operation-not-supported response. */
