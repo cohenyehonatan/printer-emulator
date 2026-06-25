@@ -110,6 +110,17 @@ export function nameWithoutLangAttr(name: string, value: string): IppAttribute {
   return { name, values: [{ tag: ValueTags.NAME_WITHOUT_LANG, value }] };
 }
 
+/** 1setOf name(MAX) (e.g. `marker-names`, `marker-colors`). RFC 8010 §3.5.2. */
+export function namesWithoutLangAttr(
+  name: string,
+  ...values: string[]
+): IppAttribute {
+  return {
+    name,
+    values: values.map((v) => ({ tag: ValueTags.NAME_WITHOUT_LANG, value: v })),
+  };
+}
+
 export function textWithoutLangAttr(name: string, value: string): IppAttribute {
   return { name, values: [{ tag: ValueTags.TEXT_WITHOUT_LANG, value }] };
 }
