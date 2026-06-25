@@ -27,6 +27,11 @@ color transform (AdobeRGB→sRGB). Job-template attributes that actually affect
 output: print-color-mode, orientation, page-ranges, number-up, print-quality,
 sides.
 
+**Supply gauge**: `marker-levels` + the parallel marker-* attributes
+(marker-names/types/colors/low-levels/high-levels/units/message) — a CMYK ink
+gauge advertised in printer-description, filtered by `requested-attributes`.
+Validated on the live wire with `ipptool` Get-Printer-Attributes.
+
 **Print-URI / Send-URI security**: strictly **local-only**, SSRF-guarded —
 `file://` (local host only) + `http://{localhost,127.0.0.1,::1}` allowlist by
 parsed-hostname string-equality (no DNS bypass), no redirect-following, 20 MB
@@ -39,10 +44,7 @@ https-localhost probes.
 
 ## Left (real gaps, prioritized)
 
-1. **`marker-levels` / `marker-names` / `marker-*` supply attributes** — the
-   ink/toner gauge every real IPP/AirPrint printer advertises. Not present.
-   Validatable via `ipptool` Get-Printer-Attributes. *(next batch)*
-2. **Push notifications** (`notify-recipient-uri`) — currently pull-only
+1. **Push notifications** (`notify-recipient-uri`) — currently pull-only
    (`ippget`). Push would be another outbound feature, same local-only scoping
    as Print-URI (`subscription-attrs.ts:108` marks push pull-unsupported).
 3. **Admin operations** — Restart-Printer, Shutdown-Printer,
