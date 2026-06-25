@@ -153,7 +153,13 @@ export function buildPrinterAttributes(
    * Consumable supply state, surfaced as the `marker-*` printer-description
    * attributes (ink/toner gauge). Defaults to the static CMYK ink set.
    */
-  supplies: PrinterSupplies = DEFAULT_SUPPLIES
+  supplies: PrinterSupplies = DEFAULT_SUPPLIES,
+  /**
+   * Whether the printer is currently accepting new jobs (RFC 8011 §5.4.20).
+   * Toggled by Enable-Printer/Disable-Printer (RFC 3998). Defaults to true so
+   * bare unit-test contexts and the always-accepting baseline are unchanged.
+   */
+  accepting = true
 ): IppAttribute[] {
   const reasons = stateReasons.length > 0 ? stateReasons : ['none'];
   const version = `${IPP_VERSION_MAJOR}.${IPP_VERSION_MINOR}`;
@@ -226,6 +232,13 @@ export function buildPrinterAttributes(
         OperationIds.IDENTIFY_PRINTER,
         OperationIds.SET_PRINTER_ATTRIBUTES,
         OperationIds.SET_JOB_ATTRIBUTES,
+        // Printer-administrative operations — RFC 3998.
+        OperationIds.ENABLE_PRINTER,
+        OperationIds.DISABLE_PRINTER,
+        OperationIds.PAUSE_PRINTER_AFTER_CURRENT_JOB,
+        OperationIds.HOLD_NEW_JOBS,
+        OperationIds.RELEASE_HELD_NEW_JOBS,
+        OperationIds.RESTART_PRINTER,
         // Event notifications — RFC 3995 subscriptions + RFC 3996 ippget pull.
         OperationIds.CREATE_PRINTER_SUBSCRIPTIONS,
         OperationIds.CREATE_JOB_SUBSCRIPTIONS,
@@ -259,7 +272,7 @@ export function buildPrinterAttributes(
     keywordAttr('generated-natural-language-supported', 'en'),
     mimeMediaTypeAttr('document-format-default', 'application/octet-stream'),
     mimeMediaTypeAttr('document-format-supported', ...SUPPORTED_FORMATS),
-    booleanAttr('printer-is-accepting-jobs', true),
+    booleanAttr('printer-is-accepting-jobs', accepting),
     // Print-URI/Send-URI fetch capability (RFC 8011 §5.4.10 / §5.4.27). These
     // advertise WHICH document-uri schemes the printer will retrieve. This
     // emulator is LOCAL-ONLY: `file` (local filesystem) and `http` (restricted
