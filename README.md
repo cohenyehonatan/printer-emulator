@@ -159,6 +159,47 @@ npx tsx src/index.ts scenario   # run the scenarios
     further data): releases/runs it when documents were sent, or aborts an empty
     job that was closed without any. Unknown job → `client-error-not-found`;
     a non-open job → `client-error-not-possible`.
+- **`Print-URI` (0x0003) / `Send-URI` (0x0007) — ⚠️ LOCAL-ONLY (SSRF-guarded)**:
+  the printer-fetches-the-document operations. Instead of carrying the document
+  in the request body, the client supplies a `document-uri` (operation
+  attribute) and the **printer** retrieves it, then runs it through the exact
+  same Job path as `Print-Job` / `Send-Document` (format sniff, enqueue, run to
+  completion, paused-deferral, render hook). `Print-URI` creates a one-shot job;
+  `Send-URI` appends a fetched document to an open `Create-Job` job and
+  `last-document=true` releases/runs it.
+
+  > **SECURITY — the fetch is hard-restricted to LOCAL sources only.** Letting a
+  > client tell the printer which URL to fetch is a classic SSRF primitive, so
+  > `documents/uri-fetch.ts` will retrieve **only**:
+  >   1. `file://` — a local filesystem path (`file:///abs/path`); directories
+  >      and over-cap files are refused.
+  >   2. `http://HOST` — **only** when `HOST` is exactly one of the literal
+  >      loopback strings **`localhost` / `127.0.0.1` / `[::1]`** (any port).
+  >
+  > **Everything else is refused** with `client-error-uri-scheme-not-supported`
+  > (0x040C): `https:` (even to localhost), `ftp:`, `data:`, `gopher:`, a
+  > `file://` with a remote host, and `http://` to **any** other host
+  > (`example.com`, `169.254.169.254`/cloud-metadata, `10.x`, a hostname that
+  > merely *resolves* to loopback, an IDN/percent-encoded spoof of `localhost`,
+  > …). The host check is **string equality on the parsed, lower-cased
+  > `URL.hostname` — never a DNS lookup**, so there is no DNS-rebinding /
+  > DNS-to-localhost bypass: only the three literals pass. **Redirects are not
+  > followed at all** — any `3xx` (even from a localhost endpoint) is treated as
+  > an access error, so a local URL cannot bounce the fetch to a non-local
+  > `Location`. A short timeout and a hard **20 MB streaming size cap** bound the
+  > request.
+  >
+  > Error mapping (the fetcher never throws): scheme/host not allowed →
+  > `client-error-uri-scheme-not-supported` (0x040C); allowed but unretrievable
+  > (missing file, http error, refused redirect) → `client-error-document-access-error`
+  > (0x0411); over the size cap → `client-error-request-entity-too-large`
+  > (0x040D). `Send-URI` checks the job (found + still open) *before* fetching,
+  > so a failed fetch never mutates the job. The capability is advertised via
+  > `document-uri-schemes-supported` / `reference-uri-schemes-supported` =
+  > `[file, http]` (there is no IPP attribute to express the host restriction;
+  > the local-only constraint is enforced in code). The fetch runs asynchronously
+  > on the HTTP transport path (`IppPrinter.handleRequestAsync` → `dispatchAsync`);
+  > all other operations remain synchronous.
 - `Get-Job-Attributes` — looks a job up by `job-id` (or `job-uri`) and returns
   its job-state, job-state-reasons, job-name, originating user, timestamps, and
   impressions-completed; honors `requested-attributes` sub-selection;
