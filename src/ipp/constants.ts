@@ -31,6 +31,17 @@ export const OperationIds = {
   CANCEL_MY_JOBS: 0x0039,
   CLOSE_JOB: 0x003b,
   IDENTIFY_PRINTER: 0x003c,
+  // ── Event notifications — RFC 3995 (subscriptions) / RFC 3996 (ippget pull) ─
+  // The codes below are the registered operation-ids from RFC 3995 §13.1 and
+  // RFC 3996 §11.1. Get-Notifications (0x001C) is the RFC 3996 "ippget" pull
+  // delivery; the rest manage Subscription objects.
+  CREATE_PRINTER_SUBSCRIPTIONS: 0x0016,
+  CREATE_JOB_SUBSCRIPTIONS: 0x0017,
+  GET_SUBSCRIPTION_ATTRIBUTES: 0x0018,
+  GET_SUBSCRIPTIONS: 0x0019,
+  RENEW_SUBSCRIPTION: 0x001a,
+  CANCEL_SUBSCRIPTION: 0x001b,
+  GET_NOTIFICATIONS: 0x001c,
 } as const;
 
 export type OperationId = (typeof OperationIds)[keyof typeof OperationIds];
@@ -41,6 +52,19 @@ export const StatusCodes = {
   CLIENT_ERROR_BAD_REQUEST: 0x0400,
   CLIENT_ERROR_NOT_POSSIBLE: 0x0405,
   CLIENT_ERROR_NOT_FOUND: 0x0406,
+  /**
+   * successful-ok-ignored-or-substituted-attributes (RFC 8011 §13.1.2.2): the
+   * operation succeeded but the printer ignored or substituted one or more
+   * supplied attributes. Used by Create-*-Subscriptions when a requested
+   * notify-* value (e.g. an unsupported notify-events keyword) was dropped.
+   */
+  SUCCESSFUL_OK_IGNORED_OR_SUBSTITUTED: 0x0001,
+  /**
+   * client-error-attributes-or-values-not-supported (RFC 8011 §13.1.4.10):
+   * returned by a subscription create when the requested notify-pull-method is
+   * not `ippget` (the only delivery this pull-mode emulator supports).
+   */
+  CLIENT_ERROR_ATTRIBUTES_NOT_SUPPORTED: 0x040b,
   SERVER_ERROR_OPERATION_NOT_SUPPORTED: 0x0501,
 } as const;
 
@@ -53,6 +77,21 @@ export const DelimiterTags = {
   END_OF_ATTRIBUTES: 0x03,
   PRINTER_ATTRIBUTES: 0x04,
   UNSUPPORTED_ATTRIBUTES: 0x05,
+  /**
+   * subscription-attributes-tag (RFC 3995 §14): introduces a group of
+   * notify-* attributes — used in Create-*-Subscriptions requests and in the
+   * subscription-attributes groups returned by Get-Subscription-Attributes /
+   * Get-Subscriptions. A delimiter tag like any other (0x00–0x07), so the
+   * codec passes it through as a group separator.
+   */
+  SUBSCRIPTION_ATTRIBUTES: 0x06,
+  /**
+   * event-notification-attributes-tag (RFC 3996 §6): introduces one event in a
+   * Get-Notifications response. Each queued event is returned as its own group
+   * (notify-subscription-id, notify-sequence-number, notify-subscribed-event,
+   * printer-up-time, plus the relevant job-id/job-state or printer-state).
+   */
+  EVENT_NOTIFICATION_ATTRIBUTES: 0x07,
 } as const;
 
 export type DelimiterTag = (typeof DelimiterTags)[keyof typeof DelimiterTags];
@@ -228,6 +267,72 @@ export type MediaValue = (typeof Media)[keyof typeof Media];
 
 /** Default `media` when a client omits it: ISO A4 (matches `media-default`). */
 export const MEDIA_DEFAULT = Media.ISO_A4;
+
+// ── Event-notification keyword values — RFC 3995 §5.3.3.4.2 ───────────────
+/**
+ * The `notify-events` keyword values this emulator supports (advertised in
+ * `notify-events-supported`). A subscription names one or more of these; when
+ * the matching state change happens the printer queues an event-notification
+ * for delivery via Get-Notifications (ippget pull). The emulator's event
+ * sources are the job lifecycle (created → completed/canceled/aborted) and
+ * Pause-Printer/Resume-Printer (printer-state-changed). `job-stopped` is
+ * advertised but only fires if a job enters processing-stopped.
+ */
+export const NotifyEvents = {
+  JOB_CREATED: 'job-created',
+  JOB_COMPLETED: 'job-completed',
+  JOB_STATE_CHANGED: 'job-state-changed',
+  JOB_STOPPED: 'job-stopped',
+  PRINTER_STATE_CHANGED: 'printer-state-changed',
+  PRINTER_STOPPED: 'printer-stopped',
+} as const;
+
+export type NotifyEventValue = (typeof NotifyEvents)[keyof typeof NotifyEvents];
+
+/** Every `notify-events` keyword advertised in `notify-events-supported`. */
+export const NOTIFY_EVENTS_SUPPORTED = [
+  NotifyEvents.JOB_CREATED,
+  NotifyEvents.JOB_COMPLETED,
+  NotifyEvents.JOB_STATE_CHANGED,
+  NotifyEvents.JOB_STOPPED,
+  NotifyEvents.PRINTER_STATE_CHANGED,
+  NotifyEvents.PRINTER_STOPPED,
+] as const;
+
+/**
+ * The only `notify-pull-method` (RFC 3996 §5.1) this emulator supports: the
+ * `ippget` pull delivery. A subscription that requests any other pull method —
+ * or supplies a `notify-recipient-uri` (which would imply push) — is rejected.
+ */
+export const NOTIFY_PULL_METHOD_IPPGET = 'ippget';
+
+/**
+ * Notification delivery schemes advertised in `notify-schemes-supported` (RFC
+ * 3995). `ippget` is the pull scheme; this emulator does no outbound push, so
+ * that is the entire set.
+ */
+export const NOTIFY_SCHEMES_SUPPORTED = ['ippget'] as const;
+
+/**
+ * notify-lease-duration (RFC 3995 §5.3.5) bounds, in seconds. A subscription's
+ * lease defaults to NOTIFY_LEASE_DURATION_DEFAULT when the client omits it (or
+ * requests 0, which RFC 3995 defines as "the longest the printer will grant").
+ * The granted lease is clamped into [MIN, MAX]; an expired lease is pruned
+ * lazily on access (no wall-clock timers). Advertised via
+ * `notify-lease-duration-supported` (a rangeOfInteger) and
+ * `notify-lease-duration-default`.
+ */
+export const NOTIFY_LEASE_DURATION_DEFAULT = 3600;
+export const NOTIFY_LEASE_DURATION_MIN = 0;
+export const NOTIFY_LEASE_DURATION_MAX = 86400;
+
+/**
+ * notify-max-events-supported (RFC 3995 §5.3.6): the cap on how many events a
+ * single subscription's queue retains. When the queue is full the oldest event
+ * is dropped (the sequence number still advances), so a slow puller loses the
+ * stalest events rather than the printer growing unbounded.
+ */
+export const NOTIFY_MAX_EVENTS = 100;
 
 // ── Charset / natural language defaults ───────────────────────────────────
 export const DEFAULT_CHARSET = 'utf-8';

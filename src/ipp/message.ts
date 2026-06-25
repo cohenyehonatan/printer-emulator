@@ -84,3 +84,26 @@ export function printerGroup(attributes: IppAttribute[]): IppAttributeGroup {
 export function jobGroup(attributes: IppAttribute[]): IppAttributeGroup {
   return { tag: DelimiterTags.JOB_ATTRIBUTES, attributes };
 }
+
+/**
+ * A subscription-attributes group (RFC 3995, delimiter tag 0x06): carries the
+ * notify-* attributes of a Subscription object — used in Create-*-Subscriptions
+ * requests and in Get-Subscription-Attributes / Get-Subscriptions responses.
+ */
+export function subscriptionGroup(
+  attributes: IppAttribute[]
+): IppAttributeGroup {
+  return { tag: DelimiterTags.SUBSCRIPTION_ATTRIBUTES, attributes };
+}
+
+/**
+ * An event-notification group (RFC 3996, delimiter tag 0x07): one delivered
+ * event in a Get-Notifications response (notify-subscription-id,
+ * notify-sequence-number, notify-subscribed-event, printer-up-time, plus the
+ * relevant job/printer state).
+ */
+export function eventNotificationGroup(
+  attributes: IppAttribute[]
+): IppAttributeGroup {
+  return { tag: DelimiterTags.EVENT_NOTIFICATION_ATTRIBUTES, attributes };
+}
