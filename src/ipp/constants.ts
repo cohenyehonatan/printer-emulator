@@ -13,9 +13,15 @@ export const IPP_VERSION_MINOR = 0x00; // IPP 2.0
 // ── Operation ids (request) — RFC 8011 §4.4 ───────────────────────────────
 export const OperationIds = {
   PRINT_JOB: 0x0002,
+  // Print-URI (0x0003) / Send-URI (0x0007) — RFC 8011 §4.2.2 / §4.3.2: the
+  // client supplies a `document-uri` and the PRINTER fetches the document. This
+  // emulator implements both, but the fetch is hard-restricted to LOCAL-ONLY
+  // sources (file:// + http://localhost) — see documents/uri-fetch.ts.
+  PRINT_URI: 0x0003,
   VALIDATE_JOB: 0x0004,
   CREATE_JOB: 0x0005,
   SEND_DOCUMENT: 0x0006,
+  SEND_URI: 0x0007,
   CANCEL_JOB: 0x0008,
   GET_JOB_ATTRIBUTES: 0x0009,
   GET_JOBS: 0x000a,
@@ -52,6 +58,28 @@ export const StatusCodes = {
   CLIENT_ERROR_BAD_REQUEST: 0x0400,
   CLIENT_ERROR_NOT_POSSIBLE: 0x0405,
   CLIENT_ERROR_NOT_FOUND: 0x0406,
+  /**
+   * client-error-request-entity-too-large (RFC 8011 §14.1.4.5, 0x040D): the
+   * request (or, for Print-URI/Send-URI, the FETCHED document) exceeds a size
+   * limit the printer enforces. Returned when a fetched document-uri body is
+   * larger than the emulator's fetch cap (see documents/uri-fetch.ts).
+   */
+  CLIENT_ERROR_REQUEST_ENTITY_TOO_LARGE: 0x040d,
+  /**
+   * client-error-uri-scheme-not-supported (RFC 8011 §14.1.4.4, 0x040C): the
+   * `document-uri` supplied to Print-URI/Send-URI uses a scheme (or, here, a
+   * host) the printer will not fetch. This emulator returns it for EVERY
+   * non-local URI — any scheme other than `file:`/`http:`, and any `http:` host
+   * that is not exactly localhost/127.0.0.1/[::1] — as the SSRF guardrail.
+   */
+  CLIENT_ERROR_URI_SCHEME_NOT_SUPPORTED: 0x040c,
+  /**
+   * client-error-document-access-error (RFC 8011 §14.1.4.9, 0x0411): the printer
+   * accepted the `document-uri` scheme/host but could not actually retrieve the
+   * document — a missing/unreadable `file://` path or a failed/erroring
+   * `http://localhost` fetch.
+   */
+  CLIENT_ERROR_DOCUMENT_ACCESS_ERROR: 0x0411,
   /**
    * successful-ok-ignored-or-substituted-attributes (RFC 8011 §13.1.2.2): the
    * operation succeeded but the printer ignored or substituted one or more
