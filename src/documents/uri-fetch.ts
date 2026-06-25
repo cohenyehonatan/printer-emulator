@@ -36,6 +36,10 @@
 import { readFileSync, statSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { get as httpGet, type IncomingMessage } from 'http';
+import {
+  isAllowedHttpHost,
+  ALLOWED_HTTP_HOSTS as LOCAL_HTTP_HOSTS,
+} from '../transport/local-only.js';
 
 /** Maximum fetched document size (bytes). Larger ⇒ reason 'too-large'. */
 export const MAX_DOCUMENT_BYTES = 20 * 1024 * 1024; // 20 MB
@@ -44,12 +48,14 @@ export const MAX_DOCUMENT_BYTES = 20 * 1024 * 1024; // 20 MB
 export const HTTP_FETCH_TIMEOUT_MS = 5000;
 
 /**
- * The literal http hosts this fetcher will contact. String equality only — no
- * DNS resolution, so a hostname that merely resolves to loopback never passes.
- * (URL.hostname strips the brackets from an IPv6 literal, so `[::1]` arrives as
- * `::1`; isAllowedHttpHost accepts both spellings.)
+ * The literal http hosts this fetcher will contact. Re-exported from the shared
+ * local-only guard (transport/local-only.ts) so Print-URI/Send-URI and the push
+ * notification recipient check enforce the IDENTICAL allowlist. String equality
+ * only — no DNS resolution, so a hostname that merely resolves to loopback never
+ * passes. (URL.hostname strips the brackets from an IPv6 literal, so `[::1]`
+ * arrives as `::1`; isAllowedHttpHost accepts both spellings.)
  */
-export const ALLOWED_HTTP_HOSTS = ['localhost', '127.0.0.1', '::1'] as const;
+export const ALLOWED_HTTP_HOSTS = LOCAL_HTTP_HOSTS;
 
 /**
  * Result of a local-only fetch attempt. `ok:false` carries a coarse reason the
@@ -94,16 +100,6 @@ export async function fetchLocalDocument(uri: string): Promise<FetchResult> {
 
   // Every other scheme (https, ftp, data, gopher, ws, …) is refused outright.
   return { ok: false, reason: 'scheme' };
-}
-
-/** Whether `host` is one of the literal allowlisted loopback names. */
-function isAllowedHttpHost(host: string): boolean {
-  return (
-    host === 'localhost' ||
-    host === '127.0.0.1' ||
-    host === '::1' ||
-    host === '[::1]'
-  );
 }
 
 /** Read a local file:// path; never throws. */
