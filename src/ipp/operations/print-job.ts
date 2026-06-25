@@ -36,6 +36,7 @@ import { readJobTemplate } from '../job-template.js';
 import { jobTemplateAttributes } from './job-template-attrs.js';
 import { detectFormat, Mime } from '../../documents/formats.js';
 import { parseRasterInfo } from '../../documents/raster-info.js';
+import { decodeCompression } from './compression.js';
 import type { Document } from '../../documents/document.js';
 import type { OperationContext } from '../dispatcher.js';
 
@@ -67,7 +68,16 @@ export function handlePrintJob(
   // render path (monochrome forces grayscale).
   const template = readJobTemplate(jobAttrs);
 
-  const bytes = request.data ?? Buffer.alloc(0);
+  const rawBytes = request.data ?? Buffer.alloc(0);
+  // compression (RFC 8011 §5.2.3): decompress the document octets BEFORE format
+  // sniffing/rasterization so the rest of the pipeline sees the original
+  // document. `none`/absent leaves the bytes byte-identical to before.
+  const compression = firstString(findAttr(opAttrs, 'compression'));
+  const decoded = decodeCompression(rawBytes, compression);
+  if (!decoded.ok) {
+    return statusResponse(request, decoded.status);
+  }
+  const bytes = decoded.bytes;
   const requestedFormat = firstString(findAttr(opAttrs, 'document-format'));
   const format =
     requestedFormat && requestedFormat !== 'application/octet-stream'

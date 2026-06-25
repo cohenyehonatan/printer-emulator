@@ -45,6 +45,7 @@ import { readJobHoldUntil, holdUntilHolds } from '../hold-until.js';
 import { readJobTemplate } from '../job-template.js';
 import { jobTemplateAttributes } from './job-template-attrs.js';
 import { detectFormat, Mime } from '../../documents/formats.js';
+import { decodeCompression } from './compression.js';
 import { fetchLocalDocument } from '../../documents/uri-fetch.js';
 import { fetchReasonToStatus } from './uri-errors.js';
 import { statusResponse } from './subscription-attrs.js';
@@ -86,7 +87,15 @@ export async function handlePrintUri(
   const holdUntil = readJobHoldUntil(opAttrs, jobAttrs);
   const template = readJobTemplate(jobAttrs);
 
-  const bytes = fetched.bytes;
+  // compression (RFC 8011 §5.2.3): the FETCHED local bytes may themselves be
+  // declared compressed via the operation attribute — decode them before format
+  // sniffing/rasterization, the same as Print-Job. `none`/absent is unchanged.
+  const compression = firstString(findAttr(opAttrs, 'compression'));
+  const decoded = decodeCompression(fetched.bytes, compression);
+  if (!decoded.ok) {
+    return errorResponse(request, decoded.status);
+  }
+  const bytes = decoded.bytes;
   const requestedFormat = firstString(findAttr(opAttrs, 'document-format'));
   const format =
     requestedFormat && requestedFormat !== 'application/octet-stream'

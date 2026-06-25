@@ -44,6 +44,7 @@ import {
 } from '../message.js';
 import { detectFormat, Mime } from '../../documents/formats.js';
 import { parseRasterInfo } from '../../documents/raster-info.js';
+import { decodeCompression } from './compression.js';
 import type { Document } from '../../documents/document.js';
 import type { OperationContext } from '../dispatcher.js';
 
@@ -71,7 +72,16 @@ export function handleSendDocument(
     return errorResponse(request, StatusCodes.CLIENT_ERROR_NOT_POSSIBLE);
   }
 
-  const bytes = request.data ?? Buffer.alloc(0);
+  // compression (RFC 8011 §5.2.3) is per-document on Send-Document: decompress
+  // THIS document's octets before format sniffing/rasterization. `none`/absent
+  // leaves the bytes byte-identical to before.
+  const rawBytes = request.data ?? Buffer.alloc(0);
+  const compression = firstString(findAttr(opAttrs, 'compression'));
+  const decoded = decodeCompression(rawBytes, compression);
+  if (!decoded.ok) {
+    return errorResponse(request, decoded.status);
+  }
+  const bytes = decoded.bytes;
   const requestedFormat = firstString(findAttr(opAttrs, 'document-format'));
   const format =
     requestedFormat && requestedFormat !== 'application/octet-stream'
