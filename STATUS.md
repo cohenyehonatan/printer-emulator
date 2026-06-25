@@ -34,6 +34,13 @@ real `printer-is-accepting-jobs` / `printer-state-reasons` and are advertised in
 operations-supported. Validated with `ipptool` (Disable → Print-Job rejected →
 Enable → accepted).
 
+**Document compression**: `gzip` / `deflate` (the `compression` operation
+attribute, RFC 8011 §5.2.3) decoded before format-sniff/raster on Print-Job /
+Send-Document / Print-URI; `compression-supported = none,gzip,deflate`
+advertised; unknown method → `client-error-compression-not-supported` (0x040E),
+corrupt stream → `client-error-document-format-error` (0x040A). Validated with
+`ipptool COMPRESSION gzip`.
+
 **Supply gauge**: `marker-levels` + the parallel marker-* attributes
 (marker-names/types/colors/low-levels/high-levels/units/message) — a CMYK ink
 gauge advertised in printer-description, filtered by `requested-attributes`.
@@ -60,9 +67,7 @@ https-localhost probes.
 
 ## Left (real gaps, prioritized)
 
-1. **Compressed document-format** — `gzip`/`deflate` (`compression`
-   operation attribute) decoding on Print-Job/Send-Document.
-2. **More admin ops** — Shutdown/Startup-Printer, Deactivate/Activate-Printer
+1. **More admin ops** — Shutdown/Startup-Printer, Deactivate/Activate-Printer
    (the RFC 3998 set beyond the six already implemented).
 
 ## Net-new breadth (bigger, optional)
