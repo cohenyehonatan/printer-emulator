@@ -32,25 +32,31 @@ sides.
 gauge advertised in printer-description, filtered by `requested-attributes`.
 Validated on the live wire with `ipptool` Get-Printer-Attributes.
 
+**Push notifications**: subscriptions with `notify-recipient-uri` get events
+delivered by HTTP POST (Send-Notifications, op 0x1d; event-notification group
+per RFC 3996 §10) — strictly **local-only** via the same shared SSRF guard as
+Print-URI. External/https/spoof/cloud-metadata recipient URIs are refused at
+create time with `client-error-uri-scheme-not-supported`. Delivery is
+fire-and-forget (never blocks/crashes job processing); the pull (`ippget`) path
+is unchanged. Validated end-to-end with `ipptool` + a real local receiver.
+
 **Print-URI / Send-URI security**: strictly **local-only**, SSRF-guarded —
+(shared guard now in `transport/local-only.ts`) —
 `file://` (local host only) + `http://{localhost,127.0.0.1,::1}` allowlist by
 parsed-hostname string-equality (no DNS bypass), no redirect-following, 20 MB
 cap. Everything else → `client-error-uri-scheme-not-supported`. Verified on the
 live wire with `ipptool` incl. cloud-metadata / userinfo-spoof / suffix-spoof /
 https-localhost probes.
 
-**Tests**: 276 passed / 1 skipped (pre-existing OpenSSL-gated IPPS test).
+**Tests**: 295 passed / 1 skipped (pre-existing OpenSSL-gated IPPS test).
 `tsc --noEmit` clean.
 
 ## Left (real gaps, prioritized)
 
-1. **Push notifications** (`notify-recipient-uri`) — currently pull-only
-   (`ippget`). Push would be another outbound feature, same local-only scoping
-   as Print-URI (`subscription-attrs.ts:108` marks push pull-unsupported).
-3. **Admin operations** — Restart-Printer, Shutdown-Printer,
+1. **Admin operations** — Restart-Printer, Shutdown-Printer,
    Enable/Disable-Printer, Pause-Printer-After-Current-Job,
    Get-Printer-Supported-Values.
-4. **Compressed document-format** — `gzip`/`deflate` (`compression`
+2. **Compressed document-format** — `gzip`/`deflate` (`compression`
    operation attribute) decoding on Print-Job/Send-Document.
 
 ## Net-new breadth (bigger, optional)
