@@ -1,19 +1,26 @@
 /**
  * Create-Printer-Subscriptions (0x0016) / Create-Job-Subscriptions (0x0017) —
- * RFC 3995 §7.1 / §7.2. WORKING (pull mode / ippget only).
+ * RFC 3995 §7.1 / §7.2. WORKING (pull `ippget` AND local-only `http` push).
  *
- * Parse the subscription-attributes group (notify-events, notify-pull-method,
- * notify-lease-duration; notify-recipient-uri must be ABSENT for pull), create
- * a Subscription via the manager, and return a subscription-attributes group
- * carrying the granted notify-subscription-id + notify-lease-duration.
+ * Parse the subscription-attributes group (notify-events, notify-pull-method or
+ * notify-recipient-uri, notify-lease-duration), create a Subscription via the
+ * manager, and return a subscription-attributes group carrying the granted
+ * notify-subscription-id + notify-lease-duration.
+ *
+ * Delivery: a notify-recipient-uri makes it a PUSH subscription — accepted ONLY
+ * for a LOCAL-ONLY (loopback http://) recipient, to which the printer POSTs
+ * Send-Notifications when an event fires (see printer/push-notifier.ts);
+ * otherwise it is a PULL (ippget) subscription drained by Get-Notifications.
  *
  * Status:
  *   - successful-ok when the subscription was created as requested;
  *   - successful-ok-ignored-or-substituted-attributes when a requested
  *     notify-events keyword was unsupported and dropped;
+ *   - client-error-uri-scheme-not-supported when a notify-recipient-uri (push)
+ *     is NOT on the local-only allowlist (the SSRF guard — exactly as Print-URI
+ *     refuses a non-local document-uri); no subscription is created;
  *   - client-error-attributes-or-values-not-supported when the request asks for
- *     a non-ippget pull method or supplies a notify-recipient-uri (push), which
- *     this pull-only emulator cannot honor — no subscription is created.
+ *     a non-ippget pull method; no subscription is created.
  * Never throws.
  *
  * Create-Job-Subscriptions additionally reads notify-job-id (the job the
@@ -67,13 +74,11 @@ function createSubscriptions(
 
   const parsed = parseSubscriptionRequest(request);
 
-  // Pull-only: reject a non-ippget pull method or a notify-recipient-uri
-  // (push). No subscription is created.
-  if (parsed.pullMethodUnsupported) {
-    return statusResponse(
-      request,
-      StatusCodes.CLIENT_ERROR_ATTRIBUTES_NOT_SUPPORTED
-    );
+  // Reject when the parse flagged the request: a non-local notify-recipient-uri
+  // (→ uri-scheme-not-supported, the SSRF guard) or a non-ippget pull method
+  // (→ attributes-not-supported). No subscription is created.
+  if (parsed.rejectStatus !== undefined) {
+    return statusResponse(request, parsed.rejectStatus);
   }
 
   const opAttrs = getGroupAttributes(
@@ -95,6 +100,7 @@ function createSubscriptions(
     leaseDuration: parsed.leaseDuration,
     jobId,
     userName,
+    recipientUri: parsed.recipientUri,
   });
 
   const status = parsed.eventsIgnored
