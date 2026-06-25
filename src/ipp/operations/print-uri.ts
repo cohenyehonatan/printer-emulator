@@ -47,6 +47,7 @@ import { jobTemplateAttributes } from './job-template-attrs.js';
 import { detectFormat, Mime } from '../../documents/formats.js';
 import { fetchLocalDocument } from '../../documents/uri-fetch.js';
 import { fetchReasonToStatus } from './uri-errors.js';
+import { statusResponse } from './subscription-attrs.js';
 import { parseRasterInfo } from '../../documents/raster-info.js';
 import type { Document } from '../../documents/document.js';
 import type { OperationContext } from '../dispatcher.js';
@@ -55,6 +56,14 @@ export async function handlePrintUri(
   request: IppRequest,
   ctx: OperationContext
 ): Promise<IppResponse> {
+  // Disable-Printer (RFC 3998): reject new jobs while not accepting (0x0507).
+  if (!(ctx.isAcceptingJobs?.() ?? true)) {
+    return statusResponse(
+      request,
+      StatusCodes.SERVER_ERROR_NOT_ACCEPTING_JOBS
+    );
+  }
+
   const opAttrs = getGroupAttributes(
     request,
     DelimiterTags.OPERATION_ATTRIBUTES

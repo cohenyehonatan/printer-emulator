@@ -26,6 +26,7 @@ import {
   firstString,
   findAttr,
 } from '../attribute.js';
+import { statusResponse } from './subscription-attrs.js';
 import { readJobHoldUntil } from '../hold-until.js';
 import { readJobTemplate } from '../job-template.js';
 import { jobTemplateAttributes } from './job-template-attrs.js';
@@ -42,6 +43,14 @@ export function handleCreateJob(
   request: IppRequest,
   ctx: OperationContext
 ): IppResponse {
+  // Disable-Printer (RFC 3998): reject new jobs while not accepting (0x0507).
+  if (!(ctx.isAcceptingJobs?.() ?? true)) {
+    return statusResponse(
+      request,
+      StatusCodes.SERVER_ERROR_NOT_ACCEPTING_JOBS
+    );
+  }
+
   const opAttrs = getGroupAttributes(
     request,
     DelimiterTags.OPERATION_ATTRIBUTES
