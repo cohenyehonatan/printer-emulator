@@ -1,14 +1,22 @@
 /**
  * IPP event-notification Subscription objects + manager (RFC 3995 / RFC 3996).
  *
- * The pull-mode (ippget) half of the notification model. A client creates a
- * Subscription naming the `notify-events` it cares about; thereafter, whenever
- * the printer records a matching event (job created/completed/state-changed,
- * printer-state-changed, …), the manager appends an EventRecord to every
- * subscription whose `notify-events` set matches — assigning each a per-
- * subscription monotonic `notify-sequence-number`. A later Get-Notifications
- * (RFC 3996) DRAINS the subscription's queue, returning one event-notification
- * group per pending event.
+ * The notification model. A client creates a Subscription naming the
+ * `notify-events` it cares about; thereafter, whenever the printer records a
+ * matching event (job created/completed/state-changed, printer-state-changed,
+ * …), the manager appends an EventRecord to every subscription whose
+ * `notify-events` set matches — assigning each a per-subscription monotonic
+ * `notify-sequence-number`.
+ *
+ * Two delivery methods:
+ *   - PULL (ippget): a later Get-Notifications (RFC 3996) DRAINS the
+ *     subscription's queue, returning one event-notification group per pending
+ *     event.
+ *   - PUSH (notify-recipient-uri): the manager additionally POSTs each matching
+ *     event to the recipient URI via push-notifier.ts. The recipient is
+ *     restricted LOCAL-ONLY (loopback http) by the create handler — the same
+ *     anti-SSRF guard as Print-URI. Delivery is fire-and-forget and never blocks
+ *     the synchronous event-recording path. The event also stays queued.
  *
  * Leases (notify-lease-duration) expire WITHOUT any wall-clock timer: a
  * subscription carries an absolute `expiresAt` epoch-ms, and every accessor
@@ -33,6 +41,7 @@ import {
   type JobStateValue,
   type PrinterStateValue,
 } from '../ipp/constants.js';
+import { deliverPush } from './push-notifier.js';
 
 /**
  * One event the printer records (job/printer state change). `subscribedEvent`
@@ -68,6 +77,13 @@ export interface SubscriptionInit {
   jobId?: number;
   /** `requesting-user-name`, recorded for Get-Subscriptions `my-subscriptions`. */
   userName?: string;
+  /**
+   * `notify-recipient-uri` for a PUSH subscription (RFC 3995). When present, the
+   * manager POSTs each matching event to this URI (see push-notifier.ts). It is
+   * already validated LOCAL-ONLY by the create handler; undefined → pull-mode
+   * (ippget) subscription drained by Get-Notifications.
+   */
+  recipientUri?: string;
 }
 
 /** A live notification subscription with its own event queue. */
@@ -76,7 +92,12 @@ export class Subscription {
   readonly events: string[];
   readonly jobId: number | undefined;
   readonly userName: string;
-  /** Always `ippget` in this pull-only emulator. */
+  /**
+   * The `notify-recipient-uri` for a PUSH subscription (already validated
+   * LOCAL-ONLY at create time), or undefined for a PULL (ippget) subscription.
+   */
+  readonly recipientUri: string | undefined;
+  /** The pull method reported for a PULL subscription (`ippget`). */
   readonly pullMethod = NOTIFY_PULL_METHOD_IPPGET;
   /** Granted lease in seconds (0 ⇒ no expiry). */
   private _leaseDuration: number;
@@ -92,6 +113,7 @@ export class Subscription {
     this.events = init.events;
     this.jobId = init.jobId;
     this.userName = init.userName ?? 'anonymous';
+    this.recipientUri = init.recipientUri;
     this._leaseDuration = clampLease(init.leaseDuration);
     this._expiresAt = leaseExpiry(this._leaseDuration, now);
   }
@@ -111,6 +133,11 @@ export class Subscription {
     return this.events.includes(event);
   }
 
+  /** Whether this is a PUSH subscription (has a notify-recipient-uri). */
+  get isPush(): boolean {
+    return this.recipientUri !== undefined;
+  }
+
   /** Whether the lease has expired as of `now` (epoch-ms). */
   isExpired(now: number): boolean {
     return this._expiresAt !== null && now >= this._expiresAt;
@@ -121,16 +148,18 @@ export class Subscription {
    * capturing `printerUpTime` (seconds). When the queue is at
    * NOTIFY_MAX_EVENTS the oldest event is dropped (sequence still advances).
    */
-  append(event: PrinterEvent, printerUpTime: number): void {
+  append(event: PrinterEvent, printerUpTime: number): EventRecord {
     this._lastSequence += 1;
-    this._queue.push({
+    const record: EventRecord = {
       ...event,
       sequenceNumber: this._lastSequence,
       printerUpTime,
-    });
+    };
+    this._queue.push(record);
     if (this._queue.length > NOTIFY_MAX_EVENTS) {
       this._queue.shift();
     }
+    return record;
   }
 
   /** Drain and return all pending events (oldest first); empties the queue. */
@@ -237,7 +266,16 @@ export class SubscriptionManager {
       // Scope a per-job subscription to its job; a printer-wide subscription
       // (no jobId) sees every event it subscribed to.
       if (sub.jobId !== undefined && sub.jobId !== event.jobId) continue;
-      sub.append(event, upTime);
+      const record = sub.append(event, upTime);
+      // PUSH delivery: POST this event to the recipient URI (LOCAL-ONLY, already
+      // validated at create time). FIRE-AND-FORGET — deliverPush never throws or
+      // rejects, so a dead/refusing recipient cannot crash the printer or block
+      // job processing. We deliberately do NOT await it: event recording is on
+      // the synchronous job-lifecycle path. The event also stays queued so a
+      // push subscription remains drainable/inspectable.
+      if (sub.recipientUri !== undefined) {
+        void deliverPush(sub.recipientUri, sub.id, record);
+      }
     }
   }
 
