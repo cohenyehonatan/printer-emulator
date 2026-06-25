@@ -37,6 +37,17 @@ export const OperationIds = {
   CANCEL_MY_JOBS: 0x0039,
   CLOSE_JOB: 0x003b,
   IDENTIFY_PRINTER: 0x003c,
+  // ── Printer-administrative operations — RFC 3998 §14.1 ───────────────────
+  // "IPP: Job and Printer Administrative Extensions". These mutate live printer
+  // state a client can read via Get-Printer-Attributes (printer-is-accepting-
+  // jobs / printer-state / printer-state-reasons). Op-ids per the RFC 3998
+  // operation-id registration (§14.1) — also in the IANA IPP registry.
+  ENABLE_PRINTER: 0x0022,
+  DISABLE_PRINTER: 0x0023,
+  PAUSE_PRINTER_AFTER_CURRENT_JOB: 0x0024,
+  HOLD_NEW_JOBS: 0x0025,
+  RELEASE_HELD_NEW_JOBS: 0x0026,
+  RESTART_PRINTER: 0x0029,
   // ── Event notifications — RFC 3995 (subscriptions) / RFC 3996 (ippget pull) ─
   // The codes below are the registered operation-ids from RFC 3995 §13.1 and
   // RFC 3996 §11.1. Get-Notifications (0x001C) is the RFC 3996 "ippget" pull
@@ -101,6 +112,14 @@ export const StatusCodes = {
    */
   CLIENT_ERROR_ATTRIBUTES_NOT_SUPPORTED: 0x040b,
   SERVER_ERROR_OPERATION_NOT_SUPPORTED: 0x0501,
+  /**
+   * server-error-not-accepting-jobs (RFC 8011 §14.1.5.8, 0x0506): the printer is
+   * not currently accepting jobs (`printer-is-accepting-jobs = false`, set by
+   * Disable-Printer, RFC 3998). Returned by Print-Job/Create-Job (and the other
+   * job-creating operations) while the printer is disabled; Enable-Printer
+   * clears it. (0x0507 is server-error-busy — do not confuse the two.)
+   */
+  SERVER_ERROR_NOT_ACCEPTING_JOBS: 0x0506,
 } as const;
 
 export type StatusCode = (typeof StatusCodes)[keyof typeof StatusCodes];
