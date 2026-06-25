@@ -182,10 +182,11 @@ describe('decodeRasterPages — PWG Raster (8-bit grayscale)', () => {
     expect(Array.from(page.gray)).toEqual([0x11, 0x22]);
   });
 
-  it('downsamples 48-bit RGB to 8-bit by taking each channel high byte', () => {
-    // width=2, 48-bit RGB (16-bit big-endian channels, 6 bytes/pixel).
-    // px0 = (0xAABB, 0xCCDD, 0xEEFF) → (0xAA, 0xCC, 0xEE)
-    // px1 = (0x1122, 0x3344, 0x5566) → (0x11, 0x33, 0x55)
+  it('preserves 48-bit RGB at full 16-bit precision (no downsample)', () => {
+    // width=2, 48-bit RGB (16-bit big-endian channels, 6 bytes/pixel). Channel
+    // values DIFFER in the low byte to prove no high-byte truncation.
+    // px0 = (0xAABB, 0xCCDD, 0xEEFF)
+    // px1 = (0x1122, 0x3344, 0x5566)
     const header = pwgPageHeader({
       width: 2,
       height: 1,
@@ -211,9 +212,11 @@ describe('decodeRasterPages — PWG Raster (8-bit grayscale)', () => {
 
     const page = decodeRasterPages(blob)![0];
     expect(page.isColor).toBe(true);
-    expect(Array.from(page.rgb)).toEqual([
-      0xaa, 0xcc, 0xee, // px0 high bytes
-      0x11, 0x33, 0x55, // px1 high bytes
+    expect(page.bitDepth).toBe(16);
+    expect(page.rgb).toHaveLength(0);
+    expect(Array.from(page.rgb16)).toEqual([
+      0xaabb, 0xccdd, 0xeeff, // px0 full 16-bit channels
+      0x1122, 0x3344, 0x5566, // px1 full 16-bit channels
     ]);
   });
 
@@ -330,9 +333,9 @@ describe('decodeRasterPages — PWG Raster (1-bit / 16-bit / CMYK)', () => {
     ]);
   });
 
-  it('downsamples 16-bit big-endian grayscale to the high byte', () => {
-    // width=2, 16-bit gray (2 bytes/pixel, big-endian). Pixels 0xABCD, 0x1234
-    // → high bytes 0xAB, 0x12.
+  it('preserves 16-bit big-endian grayscale at full precision (no downsample)', () => {
+    // width=2, 16-bit gray (2 bytes/pixel, big-endian). Pixel values differ in
+    // the low byte to prove the low byte is not truncated away.
     const header = pwgPageHeader({
       width: 2,
       height: 1,
@@ -346,8 +349,8 @@ describe('decodeRasterPages — PWG Raster (1-bit / 16-bit / CMYK)', () => {
     const line = [
       lineRepeat(1),
       literalControl(2),
-      0xab, 0xcd, // pixel 0 = 0xABCD → 0xAB
-      0x12, 0x34, // pixel 1 = 0x1234 → 0x12
+      0xab, 0xcd, // pixel 0 = 0xABCD
+      0x12, 0x34, // pixel 1 = 0x1234
     ];
 
     const blob = Buffer.concat([
@@ -357,7 +360,43 @@ describe('decodeRasterPages — PWG Raster (1-bit / 16-bit / CMYK)', () => {
     ]);
 
     const page = decodeRasterPages(blob)![0];
-    expect(Array.from(page.gray)).toEqual([0xab, 0x12]);
+    expect(page.isColor).toBe(false);
+    expect(page.bitDepth).toBe(16);
+    expect(page.gray).toHaveLength(0);
+    expect(Array.from(page.gray16)).toEqual([0xabcd, 0x1234]);
+  });
+
+  it('preserves 16-bit grayscale samples that differ only in the low byte', () => {
+    // Values chosen so a high-byte downsample would collapse distinct samples:
+    // 0x0102 and 0x0100 share high byte 0x01; 0x80FF and 0x8000 share 0x80.
+    const header = pwgPageHeader({
+      width: 4,
+      height: 1,
+      dpiX: 300,
+      dpiY: 300,
+      bitsPerColor: 16,
+      bitsPerPixel: 16,
+      bytesPerLine: 8, // 4 px * 2 bytes
+      colorSpace: 18, // sGray
+    });
+    const line = [
+      lineRepeat(1),
+      literalControl(4),
+      0x01, 0x02, // 0x0102
+      0x01, 0x00, // 0x0100
+      0x80, 0xff, // 0x80FF
+      0x80, 0x00, // 0x8000
+    ];
+
+    const blob = Buffer.concat([
+      Buffer.from('RaS2', 'ascii'),
+      header,
+      Buffer.from(line),
+    ]);
+
+    const page = decodeRasterPages(blob)![0];
+    expect(page.bitDepth).toBe(16);
+    expect(Array.from(page.gray16)).toEqual([0x0102, 0x0100, 0x80ff, 0x8000]);
   });
 
   it('converts CMYK pixels to RGB color (isColor true)', () => {
