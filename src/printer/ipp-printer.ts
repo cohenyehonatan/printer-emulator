@@ -17,7 +17,7 @@ import {
   DEFAULT_IDENTITY,
   type PrinterIdentity,
 } from './printer-attributes.js';
-import { dispatch, type OperationContext } from '../ipp/dispatcher.js';
+import { dispatch, dispatchAsync, type OperationContext } from '../ipp/dispatcher.js';
 import { decode } from '../ipp/decoder.js';
 import { encode } from '../ipp/encoder.js';
 import { IppHttpServer } from '../transport/http-server.js';
@@ -37,7 +37,7 @@ import {
   type PrinterStateValue,
   type JobStateValue,
 } from '../ipp/constants.js';
-import type { IppResponse } from '../ipp/message.js';
+import type { IppRequest, IppResponse } from '../ipp/message.js';
 import type { Job } from './job.js';
 import { renderRasterJob } from '../documents/raster-render.js';
 import { rasterizePdfOrPostScript } from '../documents/gs-raster.js';
@@ -123,7 +123,7 @@ export class IppPrinter extends EventEmitter {
     };
     this.logger = new Logger('PRINTER', config.logLevel ?? 'info');
     this.server = new IppHttpServer(config.port, (body) =>
-      this.handleRequest(body)
+      this.handleRequestAsync(body)
     );
   }
 
@@ -186,7 +186,7 @@ export class IppPrinter extends EventEmitter {
         key: readFileSync(cert.keyPath),
       };
       this.httpsServer = new IppHttpsServer(tlsPort, tlsOptions, (body) =>
-        this.handleRequest(body)
+        this.handleRequestAsync(body)
       );
       await this.httpsServer.listen();
       this.ippsUri = `ipps://${this.config.host ?? 'localhost'}:${tlsPort}/ipp/print`;
@@ -509,25 +509,21 @@ export class IppPrinter extends EventEmitter {
   }
 
   /**
-   * Decode an IPP request body, dispatch it, and encode the response.
-   * Any decode failure becomes a client-error-bad-request response so the
-   * caller always gets a valid IPP reply.
+   * Decode an IPP request body, dispatch it SYNCHRONOUSLY, and encode the
+   * response. Any decode failure becomes a client-error-bad-request response so
+   * the caller always gets a valid IPP reply.
+   *
+   * This is the synchronous path used by unit tests and every operation that
+   * completes synchronously. The async Print-URI/Send-URI operations (which
+   * fetch a document-uri) are NOT served here — they return
+   * server-error-operation-not-supported on this path; the HTTP transport uses
+   * handleRequestAsync() instead, which awaits their fetch.
    */
   handleRequest(body: Buffer): Buffer {
     let response: IppResponse;
     try {
       const request = decode(body);
-      this.logger.protocol(
-        'receive',
-        `op=0x${request.operationIdOrStatusCode.toString(16).padStart(4, '0')}`,
-        `request-id=${request.requestId} groups=${request.groups.length}`
-      );
-      // Snapshot job + printer state before dispatch so we can record the
-      // event-notifications produced by the operation (job created/completed/
-      // state-changed, printer-state-changed) by diffing afterward. Centralizing
-      // this here keeps the per-operation handlers unchanged — every job-running
-      // path (Print-Job, Send-Document/Close-Job, Release/Restart-Job,
-      // Resume-Printer's runPendingJobs) flows through one diff.
+      this.logReceive(request);
       const before = this.snapshotStates();
       response = dispatch(request, this.buildContext());
       this.recordLifecycleEvents(before);
@@ -536,13 +532,50 @@ export class IppPrinter extends EventEmitter {
       this.logger.error(`Failed to decode IPP request: ${(err as Error).message}`);
       response = badRequest();
     }
+    this.logSend(response);
+    return encode(response);
+  }
 
+  /**
+   * Async twin of handleRequest used by the HTTP/HTTPS transport: it dispatches
+   * via dispatchAsync(), so Print-URI/Send-URI can fetch their loopback-only
+   * document-uri before the response is encoded. Every synchronous operation
+   * flows through the same path with no behavioral change (dispatchAsync just
+   * delegates to the synchronous dispatch for them). Never throws.
+   */
+  async handleRequestAsync(body: Buffer): Promise<Buffer> {
+    let response: IppResponse;
+    try {
+      const request = decode(body);
+      this.logReceive(request);
+      // Snapshot job + printer state before dispatch so we can record the
+      // event-notifications produced by the operation by diffing afterward.
+      const before = this.snapshotStates();
+      response = await dispatchAsync(request, this.buildContext());
+      this.recordLifecycleEvents(before);
+      this.emit('request', request, response);
+    } catch (err) {
+      this.logger.error(`Failed to decode IPP request: ${(err as Error).message}`);
+      response = badRequest();
+    }
+    this.logSend(response);
+    return encode(response);
+  }
+
+  private logReceive(request: IppRequest): void {
+    this.logger.protocol(
+      'receive',
+      `op=0x${request.operationIdOrStatusCode.toString(16).padStart(4, '0')}`,
+      `request-id=${request.requestId} groups=${request.groups.length}`
+    );
+  }
+
+  private logSend(response: IppResponse): void {
     this.logger.protocol(
       'send',
       `status=0x${response.operationIdOrStatusCode.toString(16).padStart(4, '0')}`,
       `request-id=${response.requestId}`
     );
-    return encode(response);
   }
 }
 
